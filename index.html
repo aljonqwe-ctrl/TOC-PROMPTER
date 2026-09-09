@@ -101,12 +101,113 @@
     overflow-y:auto;
   }
 
-  .setup-inner{
+  .setup-layout{
     width:100%;
     max-width:min(1500px, 94vw);
     display:flex;
+    align-items:flex-start;
+    gap:18px;
+  }
+
+  .script-sidebar{
+    width:230px;
+    flex-shrink:0;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    padding:14px;
+    max-height:80vh;
+  }
+  .sidebar-title{
+    font-size:11px;
+    letter-spacing:1.5px;
+    color:var(--text-dim);
+    padding:0 2px;
+  }
+  #addScriptBtn{
+    width:100%;
+    padding:10px;
+    font-size:12px;
+    letter-spacing:1px;
+    color:var(--phosphor);
+    background:var(--bg);
+  }
+  .script-list{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    overflow-y:auto;
+    padding:2px;
+  }
+  .script-item{
+    display:flex;
+    align-items:center;
+    gap:4px;
+    padding:4px 4px 4px 10px;
+    cursor:pointer;
+  }
+  .script-item.active{
+    color:var(--phosphor);
+  }
+  .script-item .script-name{
+    flex:1;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    background:transparent;
+    border:none;
+    color:inherit;
+    font-family:var(--mono);
+    font-size:12px;
+    padding:6px 2px;
+    outline:none;
+    cursor:pointer;
+  }
+  .script-item .script-name:focus{
+    cursor:text;
+  }
+  .script-item .rename-btn{
+    flex-shrink:0;
+    background:none;
+    border:none;
+    color:var(--text-dim);
+    cursor:pointer;
+    font-size:12px;
+    padding:4px 6px;
+    border-radius:6px;
+  }
+  .script-item .rename-btn:hover{ color:var(--phosphor); }
+  .script-item .del-btn{
+    flex-shrink:0;
+    background:none;
+    border:none;
+    color:var(--text-dim);
+    cursor:pointer;
+    font-size:13px;
+    padding:4px 6px;
+    border-radius:6px;
+  }
+  .script-item .del-btn:hover{ color:var(--danger); }
+  .script-empty-hint{
+    font-size:11px;
+    color:var(--text-dim);
+    padding:8px 6px;
+    line-height:1.5;
+  }
+
+  .setup-inner{
+    width:100%;
+    min-width:0;
+    flex:1;
+    display:flex;
     flex-direction:column;
     gap:18px;
+  }
+
+  @media (max-width:900px){
+    .setup-layout{ flex-direction:column; }
+    .script-sidebar{ width:100%; max-height:220px; }
   }
 
   .brand{
@@ -160,6 +261,31 @@
     color:var(--phosphor);
   }
 
+  .upload-row{
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  .upload-row #uploadFileBtn{
+    padding:9px 16px;
+    font-size:12px;
+    letter-spacing:.5px;
+    color:var(--phosphor);
+    background:var(--bg);
+    white-space:nowrap;
+  }
+  .upload-row #uploadFileBtn:disabled{
+    opacity:.5;
+    cursor:default;
+  }
+  .upload-hint{
+    font-size:11px;
+    color:var(--text-dim);
+  }
+  #scriptInput.drag-over{
+    box-shadow: inset 0 0 0 2px var(--phosphor), inset 6px 6px 14px var(--shadow-dark), inset -6px -6px 14px var(--shadow-light);
+  }
   #scriptInput{
     width:100%;
     min-height:280px;
@@ -617,7 +743,13 @@
 <body>
 
 <div id="setup">
-  <div class="setup-inner">
+  <div class="setup-layout">
+    <div class="script-sidebar neu-raise">
+      <div class="sidebar-title">SAVED SCRIPTS</div>
+      <button type="button" class="neu-btn" id="addScriptBtn">+ add script</button>
+      <div class="script-list" id="scriptList"></div>
+    </div>
+    <div class="setup-inner">
     <div class="brand">
       <div class="brand-left">
         <h1>PROMPTER<span class="dot">_</span></h1>
@@ -627,6 +759,12 @@
         <button type="button" data-theme-choice="dark" class="active">dark</button>
         <button type="button" data-theme-choice="light">light</button>
       </div>
+    </div>
+
+    <div class="upload-row">
+      <button type="button" class="neu-btn" id="uploadFileBtn">+ upload file</button>
+      <span class="upload-hint">.docx · .pdf · .txt — or just drop it on the box below</span>
+      <input type="file" id="fileInput" accept=".docx,.pdf,.txt,.md" style="display:none">
     </div>
 
     <div id="scriptInput" contenteditable="true" data-placeholder="Type or paste your script..."></div>
@@ -710,6 +848,7 @@
 
     <button id="startBtn" disabled>START</button>
     <div class="hint">select text above, then use B / U, a case button, or a swatch to format it — or right-click the selection · space to play/pause once running · ↑↓ move script · esc to exit</div>
+    </div>
   </div>
 </div>
 
@@ -827,6 +966,152 @@
   const ctxSentenceCaseBtn = document.getElementById('ctxSentenceCase');
   const ctxClearBtn = document.getElementById('ctxClear');
   const ctxCustomColor = document.getElementById('ctxCustomColor');
+  const scriptListEl = document.getElementById('scriptList');
+  const addScriptBtn = document.getElementById('addScriptBtn');
+  const uploadFileBtn = document.getElementById('uploadFileBtn');
+  const fileInput = document.getElementById('fileInput');
+
+  // ---- saved scripts sidebar: multiple scripts stored in localStorage,
+  // switch between them, rename inline, delete, autosave edits back to
+  // whichever one is currently selected. ----
+  const SCRIPTS_KEY = 'prompter_saved_scripts_v1';
+  let savedScripts = [];
+  let currentScriptId = null;
+  let autosaveTimer = null;
+
+  function loadSavedScripts(){
+    try{
+      const raw = localStorage.getItem(SCRIPTS_KEY);
+      savedScripts = raw ? JSON.parse(raw) : [];
+      if(!Array.isArray(savedScripts)) savedScripts = [];
+    } catch(err){
+      savedScripts = [];
+    }
+  }
+
+  function persistSavedScripts(){
+    try{ localStorage.setItem(SCRIPTS_KEY, JSON.stringify(savedScripts)); }
+    catch(err){ /* storage unavailable — fail silently, in-memory list still works */ }
+  }
+
+  function renderScriptList(){
+    scriptListEl.innerHTML = '';
+    if(savedScripts.length === 0){
+      const hint = document.createElement('div');
+      hint.className = 'script-empty-hint';
+      hint.textContent = 'no saved scripts yet — write something above, then tap "add script"';
+      scriptListEl.appendChild(hint);
+      return;
+    }
+    savedScripts.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'script-item neu-btn' + (s.id === currentScriptId ? ' active' : '');
+
+      const nameInput = document.createElement('input');
+      nameInput.className = 'script-name';
+      nameInput.value = s.name;
+      nameInput.readOnly = true;
+      nameInput.title = 'click to open · double-click to rename';
+      nameInput.addEventListener('click', () => selectScript(s.id));
+      const startRename = () => {
+        nameInput.readOnly = false;
+        nameInput.focus();
+        nameInput.select();
+      };
+      nameInput.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startRename();
+      });
+      nameInput.addEventListener('blur', () => {
+        nameInput.readOnly = true;
+        const val = nameInput.value.trim() || 'Untitled';
+        if(val !== s.name){
+          s.name = val;
+          persistSavedScripts();
+        }
+        nameInput.value = s.name;
+      });
+      nameInput.addEventListener('keydown', (e) => {
+        if(e.key === 'Enter'){ e.preventDefault(); nameInput.blur(); }
+        else if(e.key === 'Escape'){ nameInput.value = s.name; nameInput.blur(); }
+      });
+
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'rename-btn';
+      renameBtn.title = 'rename script';
+      renameBtn.textContent = '✎';
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startRename();
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'del-btn';
+      delBtn.title = 'delete script';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if(!confirm('Delete "' + s.name + '"?')) return;
+        savedScripts = savedScripts.filter(x => x.id !== s.id);
+        persistSavedScripts();
+        if(currentScriptId === s.id){
+          currentScriptId = null;
+          scriptInput.innerHTML = '';
+          startBtn.disabled = true;
+        }
+        renderScriptList();
+      });
+
+      item.appendChild(nameInput);
+      item.appendChild(renameBtn);
+      item.appendChild(delBtn);
+      scriptListEl.appendChild(item);
+    });
+  }
+
+  function selectScript(id){
+    const s = savedScripts.find(x => x.id === id);
+    if(!s) return;
+    currentScriptId = id;
+    scriptInput.innerHTML = s.html;
+    startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    renderScriptList();
+  }
+
+  function addNewScript(){
+    const id = 'scr_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const entry = {
+      id,
+      name: 'Script ' + (savedScripts.length + 1),
+      html: scriptInput.innerHTML
+    };
+    savedScripts.push(entry);
+    currentScriptId = id;
+    persistSavedScripts();
+    renderScriptList();
+  }
+
+  addScriptBtn.addEventListener('click', addNewScript);
+
+  // debounced autosave: as the user edits, keep the currently-open saved
+  // script up to date without re-saving on every keystroke
+  function scheduleScriptAutosave(){
+    if(currentScriptId === null) return;
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      const s = savedScripts.find(x => x.id === currentScriptId);
+      if(s){
+        s.html = scriptInput.innerHTML;
+        persistSavedScripts();
+      }
+    }, 500);
+  }
+  scriptInput.addEventListener('input', scheduleScriptAutosave);
+
+  loadSavedScripts();
+  renderScriptList();
 
   // ---- theme (dark / light) ----
   function setTheme(mode){
@@ -1069,6 +1354,149 @@
     // is enough — no need to type/delete a character afterward just to
     // wake the button up.
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
+  // ---- file upload: drop or pick a .docx / .pdf / .txt / .md file and
+  // pull its text straight into the script editor, instead of having to
+  // copy-paste it in manually. Heavy parsing libraries (mammoth for
+  // .docx, pdf.js for .pdf) are only fetched from CDN the first time
+  // they're actually needed, so the app stays light — and still works
+  // fully offline for plain text files once installed as a PWA. ----
+  function loadScriptOnce(src){
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-dyn-src="' + src + '"]');
+      if(existing){
+        if(existing.dataset.loaded === '1') return resolve();
+        existing.addEventListener('load', () => resolve());
+        existing.addEventListener('error', () => reject(new Error('Failed to load ' + src)));
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = src;
+      s.dataset.dynSrc = src;
+      s.onload = () => { s.dataset.loaded = '1'; resolve(); };
+      s.onerror = () => reject(new Error('Failed to load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function ensureMammoth(){
+    if(window.mammoth) return;
+    await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+  }
+
+  async function ensurePdfJs(){
+    if(window.pdfjsLib) return;
+    await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  async function extractTextFromFile(file){
+    const name = file.name.toLowerCase();
+
+    if(name.endsWith('.txt') || name.endsWith('.md')){
+      return await file.text();
+    }
+
+    if(name.endsWith('.docx')){
+      try{ await ensureMammoth(); }
+      catch(err){ throw new Error('Could not load the .docx reader — check your internet connection and try again.'); }
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await window.mammoth.extractRawText({ arrayBuffer });
+      return result.value;
+    }
+
+    if(name.endsWith('.doc')){
+      throw new Error('The old .doc format isn\'t supported — resave it as .docx (or .txt) and try again.');
+    }
+
+    if(name.endsWith('.pdf')){
+      try{ await ensurePdfJs(); }
+      catch(err){ throw new Error('Could not load the .pdf reader — check your internet connection and try again.'); }
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let text = '';
+      for(let i = 1; i <= pdf.numPages; i++){
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        text += content.items.map(item => item.str).join(' ') + '\n\n';
+      }
+      return text;
+    }
+
+    throw new Error('Unsupported file type: ' + file.name + '\n\nTry .docx, .pdf, .txt, or .md.');
+  }
+
+  // Turns plain extracted text into the same kind of markup the editor
+  // already produces for typed/pasted content — a run of text nodes with
+  // <br> line breaks — so it behaves like normal script text afterward
+  // (selectable, colorable, etc.), not raw HTML from the file.
+  function textToEditorFragment(text){
+    const frag = document.createDocumentFragment();
+    const lines = text.split(/\r\n|\r|\n/);
+    lines.forEach((line, i) => {
+      frag.appendChild(document.createTextNode(line));
+      if(i < lines.length - 1) frag.appendChild(document.createElement('br'));
+    });
+    return frag;
+  }
+
+  function insertUploadedText(text){
+    const trimmed = text.trim();
+    if(!trimmed){
+      alert('No readable text was found in that file.');
+      return;
+    }
+    const hasExisting = scriptInput.textContent.trim().length > 0;
+    if(hasExisting && !confirm('Add this to the end of your current script?\n\nOK = append · Cancel = replace what\'s there now')){
+      scriptInput.innerHTML = '';
+    } else if(hasExisting){
+      scriptInput.appendChild(document.createElement('br'));
+      scriptInput.appendChild(document.createElement('br'));
+    }
+    scriptInput.appendChild(textToEditorFragment(trimmed));
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  async function handleUploadedFile(file){
+    if(!file) return;
+    const prevLabel = uploadFileBtn.textContent;
+    uploadFileBtn.disabled = true;
+    uploadFileBtn.textContent = 'reading…';
+    try{
+      const text = await extractTextFromFile(file);
+      insertUploadedText(text);
+    } catch(err){
+      alert(err.message || 'Could not read that file.');
+    } finally {
+      uploadFileBtn.disabled = false;
+      uploadFileBtn.textContent = prevLabel;
+    }
+  }
+
+  uploadFileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    fileInput.value = '';
+    handleUploadedFile(file);
+  });
+
+  ['dragenter','dragover'].forEach(evt => {
+    scriptInput.addEventListener(evt, (e) => {
+      if(!e.dataTransfer || !e.dataTransfer.types || e.dataTransfer.types.indexOf('Files') === -1) return;
+      e.preventDefault();
+      scriptInput.classList.add('drag-over');
+    });
+  });
+  ['dragleave','drop'].forEach(evt => {
+    scriptInput.addEventListener(evt, (e) => {
+      scriptInput.classList.remove('drag-over');
+    });
+  });
+  scriptInput.addEventListener('drop', (e) => {
+    if(!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    handleUploadedFile(e.dataTransfer.files[0]);
   });
 
   // ---- setup: live slider labels ----
