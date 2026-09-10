@@ -789,8 +789,8 @@
 
     <div class="upload-row">
       <button type="button" class="neu-btn" id="uploadFileBtn">+ upload file</button>
-      <span class="upload-hint">.docx · .pdf · .txt — or just drop it on the box below</span>
-      <input type="file" id="fileInput" accept=".docx,.pdf,.txt,.md" style="display:none">
+      <span class="upload-hint">.docx · .doc · .pdf · .txt — or just drop it on the box below</span>
+      <input type="file" id="fileInput" accept=".docx,.doc,.pdf,.txt,.md" style="display:none">
     </div>
 
     <div id="scriptInput" contenteditable="true" data-placeholder="Type or paste your script..."></div>
@@ -1382,12 +1382,14 @@
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
-  // ---- file upload: drop or pick a .docx / .pdf / .txt / .md file and
-  // pull its text straight into the script editor, instead of having to
-  // copy-paste it in manually. Heavy parsing libraries (mammoth for
-  // .docx, pdf.js for .pdf) are only fetched from CDN the first time
+  // ---- file upload: drop or pick a .docx / .doc / .pdf / .txt / .md
+  // file and pull its text straight into the script editor, instead of
+  // having to copy-paste it in manually. Heavy parsing libraries (mammoth
+  // for .docx, pdf.js for .pdf) are only fetched from CDN the first time
   // they're actually needed, so the app stays light — and still works
-  // fully offline for plain text files once installed as a PWA. ----
+  // fully offline for plain text and legacy .doc files (parsed with a
+  // small built-in OLE2/piece-table reader, no CDN needed) once installed
+  // as a PWA. ----
   function loadScriptOnce(src){
     return new Promise((resolve, reject) => {
       const existing = document.querySelector('script[data-dyn-src="' + src + '"]');
@@ -1424,6 +1426,503 @@
 
   function escapeHtml(s){
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ---- legacy .doc reader: parses the OLE2 compound-file container and
+  // the Word 97-2003 binary format's piece table directly. No CDN library
+  // exists for this in-browser, so this is a small hand-rolled parser.
+  // It walks the FAT/miniFAT sector chains to pull out the "WordDocument"
+  // and "0Table"/"1Table" streams, locates the Clx piece table (Pcdt),
+  // and decodes each text piece as either windows-1252 (compressed runs)
+  // or UTF-16LE (uncompressed runs) — exactly how Word itself stores it.
+  // Falls back to a plain fcMin..fcMac scan if the piece table can't be
+  // found, so most real-world .doc files still come out readable even if
+  // this simplified parser hits something it doesn't handle. ----
+  function parseOleFile(buffer){
+    const view = new DataView(buffer);
+    const sig = [0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1];
+    for(let i=0;i<8;i++){
+      if(view.getUint8(i) !== sig[i]) throw new Error('not a valid .doc file (missing OLE header)');
+    }
+
+    const sectorSize = 1 << view.getUint16(30, true);
+    const miniSectorSize = 1 << view.getUint16(32, true);
+    const firstDirSector = view.getUint32(48, true);
+    const miniStreamCutoff = view.getUint32(56, true);
+    const firstMiniFatSector = view.getUint32(60, true);
+    const numMiniFatSectors = view.getUint32(64, true);
+    const firstDifatSector = view.getUint32(68, true);
+    const numDifatSectors = view.getUint32(72, true);
+
+    const FREESECT = 0xFFFFFFFF, ENDOFCHAIN = 0xFFFFFFFE;
+    const sectorOffset = id => 512 + id * sectorSize;
+    const entriesPerFatSector = sectorSize / 4;
+
+    let difat = [];
+    for(let i=0;i<109;i++){
+      const v = view.getUint32(76 + i*4, true);
+      if(v !== FREESECT) difat.push(v);
+    }
+    let nextDifat = firstDifatSector, difatGuard = 0;
+    while(nextDifat !== ENDOFCHAIN && nextDifat !== FREESECT && difatGuard < numDifatSectors + 2){
+      difatGuard++;
+      const off = sectorOffset(nextDifat);
+      for(let j=0;j<entriesPerFatSector-1;j++){
+        const v = view.getUint32(off + j*4, true);
+        if(v !== FREESECT) difat.push(v);
+      }
+      nextDifat = view.getUint32(off + (entriesPerFatSector-1)*4, true);
+    }
+
+    const fat = new Uint32Array(difat.length * entriesPerFatSector);
+    difat.forEach((sec, idx) => {
+      const off = sectorOffset(sec);
+      for(let j=0;j<entriesPerFatSector;j++) fat[idx*entriesPerFatSector+j] = view.getUint32(off+j*4, true);
+    });
+
+    function readChain(startSector, size){
+      const chunks = [];
+      let sec = startSector, remaining = (size == null) ? null : size;
+      const guard = new Set();
+      while(sec !== ENDOFCHAIN && sec !== FREESECT && sec < fat.length){
+        if(guard.has(sec)) break;
+        guard.add(sec);
+        const off = sectorOffset(sec);
+        const len = remaining == null ? sectorSize : Math.min(sectorSize, remaining);
+        chunks.push(new Uint8Array(buffer, off, len));
+        if(remaining != null){ remaining -= len; if(remaining <= 0) break; }
+        sec = fat[sec];
+      }
+      let total = 0; chunks.forEach(c => total += c.length);
+      const out = new Uint8Array(total); let o = 0;
+      chunks.forEach(c => { out.set(c, o); o += c.length; });
+      return out;
+    }
+
+    const dirBytes = readChain(firstDirSector, null);
+    const numEntries = Math.floor(dirBytes.length / 128);
+    const dirDv = new DataView(dirBytes.buffer, dirBytes.byteOffset, dirBytes.byteLength);
+    const decoder16 = new TextDecoder('utf-16le');
+    const entries = [];
+    for(let i=0;i<numEntries;i++){
+      const base = i*128;
+      const nameLen = dirDv.getUint16(base+64, true);
+      const name = nameLen >= 2 ? decoder16.decode(dirBytes.subarray(base, base+nameLen-2)) : '';
+      entries.push({
+        name, type: dirDv.getUint8(base+66),
+        startSector: dirDv.getUint32(base+116, true),
+        size: dirDv.getUint32(base+120, true)
+      });
+    }
+
+    const root = entries.find(e => e.type === 5);
+    if(!root) throw new Error('missing root entry in .doc file');
+
+    let miniFat = new Uint32Array(0);
+    if(numMiniFatSectors > 0){
+      const mb = readChain(firstMiniFatSector, null);
+      miniFat = new Uint32Array(Math.floor(mb.length/4));
+      const mv = new DataView(mb.buffer, mb.byteOffset, mb.byteLength);
+      for(let i=0;i<miniFat.length;i++) miniFat[i] = mv.getUint32(i*4, true);
+    }
+
+    let miniStream = null;
+    function readMiniChain(startSector, size){
+      if(!miniStream) miniStream = readChain(root.startSector, root.size);
+      const chunks = [];
+      let sec = startSector, remaining = size;
+      const guard = new Set();
+      while(sec !== ENDOFCHAIN && sec !== FREESECT && sec < miniFat.length){
+        if(guard.has(sec)) break;
+        guard.add(sec);
+        const off = sec * miniSectorSize;
+        const len = Math.min(miniSectorSize, remaining);
+        chunks.push(miniStream.subarray(off, off+len));
+        remaining -= len; if(remaining <= 0) break;
+        sec = miniFat[sec];
+      }
+      let total = 0; chunks.forEach(c => total += c.length);
+      const out = new Uint8Array(total); let o = 0;
+      chunks.forEach(c => { out.set(c, o); o += c.length; });
+      return out;
+    }
+
+    return {
+      getStream(name){
+        const e = entries.find(x => x.type === 2 && x.name === name);
+        if(!e) return null;
+        return e.size < miniStreamCutoff ? readMiniChain(e.startSector, e.size) : readChain(e.startSector, e.size);
+      }
+    };
+  }
+
+  function cleanupWordControlChars(text){
+    return text
+      .replace(/\x13[^\x14\x15]*\x14/g, '')   // drop field instructions (e.g. TOC/PAGE codes), keep field results
+      .replace(/[\x00\x13\x15]/g, '')
+      .replace(/\x07/g, '\t')                 // table cell mark
+      .replace(/\x0b/g, '\n')                 // line break
+      .replace(/\x0c/g, '\n\n')               // page break
+      .replace(/\x1e/g, '-')                  // non-breaking hyphen
+      .replace(/\x1f/g, '')                   // optional hyphen
+      .replace(/\r/g, '\n\n')                 // paragraph mark
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  // ---- legacy .doc color reading: Word 97-2003 stores per-run character
+  // formatting (bold, color, ...) as "sprm" (Single PRoperty Modifier)
+  // instructions packed into 512-byte "FKP" pages, which are themselves
+  // located via the PlcfBteChpx table in the FIB. This walks that chain
+  // to build a flat, fc-ordered list of {fcStart, fcEnd, color} runs
+  // covering the whole WordDocument stream, so the piece-table decoder
+  // below can look up which color (if any) applies to each stretch of
+  // text it emits — mirroring what extractDocxColorFragment does for
+  // .docx by reading <w:color> directly. Any single sprm we don't
+  // recognize is just skipped (color stays null for that run); if the
+  // whole walk looks inconsistent, the caller catches the error and
+  // falls back to plain text, same as it always did. ----
+  const ICO_COLORS = [
+    null, '#000000', '#0000FF', '#00FFFF', '#00FF00', '#FF00FF', '#FF0000', '#FFFF00',
+    '#FFFFFF', '#000080', '#008080', '#008000', '#800080', '#800000', '#808000',
+    '#808080', '#C0C0C0'
+  ];
+
+  function parseChpxColor(page, start, len){
+    let pos = start, end = start + len, color = null, guard = 0;
+    while(pos < end - 1 && guard < 1000){
+      guard++;
+      const opcode = page[pos] | (page[pos+1] << 8);
+      pos += 2;
+      const spra = (opcode >> 13) & 0x7;
+      let opLen;
+      if(spra === 0 || spra === 1) opLen = 1;
+      else if(spra === 2 || spra === 4 || spra === 5) opLen = 2;
+      else if(spra === 3) opLen = 4;
+      else if(spra === 7) opLen = 3;
+      else if(spra === 6){
+        if(pos >= end) break;
+        opLen = page[pos];
+        pos += 1;
+      } else opLen = 0;
+      if(pos + opLen > end) break;
+      if(opcode === 0x6870 && opLen === 4){        // sprmCCv: COLORREF font color
+        const raw = (page[pos] | (page[pos+1]<<8) | (page[pos+2]<<16) | (page[pos+3]<<24)) >>> 0;
+        color = (raw === 0xFF000000) ? null : '#' + [page[pos],page[pos+1],page[pos+2]]
+          .map(x => x.toString(16).padStart(2,'0')).join('');
+      } else if(opcode === 0x2A42 && opLen === 1){  // sprmCIco: 16-color palette index
+        const ico = page[pos];
+        color = (ico > 0 && ico < ICO_COLORS.length) ? ICO_COLORS[ico] : null;
+      }
+      pos += opLen;
+    }
+    return color;
+  }
+
+  function readFkpChpxRuns(wd, pn){
+    const pageOff = pn * 512;
+    if(pageOff < 0 || pageOff + 512 > wd.length) return [];
+    const page = wd.subarray(pageOff, pageOff + 512);
+    const pv = new DataView(page.buffer, page.byteOffset, page.byteLength);
+    const crun = page[511];
+    if(crun <= 0) return [];
+    const fcCount = crun + 1;
+    if(4*fcCount + crun + 1 > 512) return [];
+    const fcs = [];
+    for(let i=0;i<fcCount;i++) fcs.push(pv.getUint32(i*4, true));
+    const rgbOff = 4*fcCount;
+    const runs = [];
+    for(let i=0;i<crun;i++){
+      const bx = page[rgbOff + i];
+      let color = null;
+      if(bx !== 0){
+        const chpxOff = bx * 2;
+        if(chpxOff < 512){
+          const cb = page[chpxOff];
+          if(chpxOff + 1 + cb <= 512) color = parseChpxColor(page, chpxOff + 1, cb);
+        }
+      }
+      runs.push({ fcStart: fcs[i], fcEnd: fcs[i+1], color });
+    }
+    return runs;
+  }
+
+  function buildDocColorRuns(ole, wd, dv){
+    const flags1 = dv.getUint16(0x0A, true);
+    const fWhichTblStm = (flags1 & 0x0200) !== 0;
+    const table = ole.getStream(fWhichTblStm ? '1Table' : '0Table') || ole.getStream(fWhichTblStm ? '0Table' : '1Table');
+    if(!table) return [];
+    const tv = new DataView(table.buffer, table.byteOffset, table.byteLength);
+    const fcOff = 154 + 12*8; // fcPlcfBteChpx/lcbPlcfBteChpx (index 12 in FibRgFcLcb97)
+    const fc = dv.getUint32(fcOff, true);
+    const lcb = dv.getUint32(fcOff+4, true);
+    if(lcb <= 0 || fc + lcb > table.length) return [];
+    const n = Math.floor((lcb - 4) / 8);
+    if(n <= 0) return [];
+    const fcs = [];
+    for(let i=0;i<=n;i++) fcs.push(tv.getUint32(fc + i*4, true));
+    const pnOff = fc + 4*(n+1);
+    const runs = [];
+    for(let i=0;i<n;i++){
+      const pn = tv.getUint32(pnOff + i*4, true);
+      readFkpChpxRuns(wd, pn).forEach(r => runs.push(r));
+    }
+    runs.sort((a,b) => a.fcStart - b.fcStart);
+    return runs;
+  }
+
+  function findColorRunIndex(colorRuns, fc){
+    let lo=0, hi=colorRuns.length-1, ans=colorRuns.length;
+    while(lo<=hi){
+      const mid=(lo+hi)>>1;
+      if(colorRuns[mid].fcEnd <= fc){ lo=mid+1; } else { ans=mid; hi=mid-1; }
+    }
+    return ans;
+  }
+
+  function extractDocViaFcMinMac(wd, dv){
+    const fcMin = dv.getUint32(0x18, true);
+    const fcMac = dv.getUint32(0x1C, true);
+    if(fcMac <= fcMin || fcMac > wd.length) return '';
+    return new TextDecoder('utf-16le').decode(wd.subarray(fcMin, fcMac));
+  }
+
+  function extractDocViaPieceTable(ole, wd, dv){
+    const flags1 = dv.getUint16(0x0A, true);
+    const fWhichTblStm = (flags1 & 0x0200) !== 0;
+    const table = ole.getStream(fWhichTblStm ? '1Table' : '0Table') || ole.getStream(fWhichTblStm ? '0Table' : '1Table');
+    if(!table) throw new Error('missing table stream');
+    const tv = new DataView(table.buffer, table.byteOffset, table.byteLength);
+
+    const fcClxOff = 154 + 33*8; // offset of fcClx within FibRgFcLcb97 (fibRgFcLcbBlob starts at 154)
+    const fcClx = dv.getUint32(fcClxOff, true);
+    const lcbClx = dv.getUint32(fcClxOff+4, true);
+    if(lcbClx <= 0 || fcClx + lcbClx > table.length) throw new Error('invalid Clx range');
+
+    let pos = fcClx;
+    const end = fcClx + lcbClx;
+    let plcPcd = null, guard = 0;
+    while(pos < end && guard < 100000){
+      guard++;
+      const clxt = tv.getUint8(pos);
+      if(clxt === 1){ // Prc block: skip over it
+        pos += 1;
+        const cb = tv.getUint16(pos, true);
+        pos += 2 + cb;
+      } else if(clxt === 2){ // Pcdt: the piece table itself
+        pos += 1;
+        const lcb = tv.getUint32(pos, true);
+        pos += 4;
+        plcPcd = table.subarray(pos, pos+lcb);
+        break;
+      } else break;
+    }
+    if(!plcPcd) throw new Error('piece table not found');
+
+    const n = Math.floor((plcPcd.length - 4) / 12);
+    if(n <= 0) throw new Error('empty piece table');
+    const pv = new DataView(plcPcd.buffer, plcPcd.byteOffset, plcPcd.byteLength);
+    const cps = [];
+    for(let i=0;i<=n;i++) cps.push(pv.getUint32(i*4, true));
+    const pcdStart = 4*(n+1);
+    const decU16 = new TextDecoder('utf-16le');
+    const dec1252 = new TextDecoder('windows-1252');
+    let out = '';
+    for(let i=0;i<n;i++){
+      const base = pcdStart + i*8;
+      if(base+8 > plcPcd.length) break;
+      const fcRaw = pv.getUint32(base+2, true);
+      const compressed = (fcRaw & 0x40000000) !== 0;
+      let fc = fcRaw & 0x3FFFFFFF;
+      if(compressed) fc = Math.floor(fc/2);
+      const count = cps[i+1] - cps[i];
+      if(count <= 0) continue;
+      if(compressed){
+        if(fc+count > wd.length) continue;
+        out += dec1252.decode(wd.subarray(fc, fc+count));
+      } else {
+        if(fc+count*2 > wd.length) continue;
+        out += decU16.decode(wd.subarray(fc, fc+count*2));
+      }
+    }
+    return out;
+  }
+
+  // Same walk as extractDocViaPieceTable, but splits each piece at any
+  // color-run boundary it overlaps, emitting {text, color} segments
+  // instead of one flat string.
+  function extractDocViaPieceTableColored(ole, wd, dv, colorRuns){
+    const flags1 = dv.getUint16(0x0A, true);
+    const fWhichTblStm = (flags1 & 0x0200) !== 0;
+    const table = ole.getStream(fWhichTblStm ? '1Table' : '0Table') || ole.getStream(fWhichTblStm ? '0Table' : '1Table');
+    if(!table) throw new Error('missing table stream');
+    const tv = new DataView(table.buffer, table.byteOffset, table.byteLength);
+
+    const fcClxOff = 154 + 33*8;
+    const fcClx = dv.getUint32(fcClxOff, true);
+    const lcbClx = dv.getUint32(fcClxOff+4, true);
+    if(lcbClx <= 0 || fcClx + lcbClx > table.length) throw new Error('invalid Clx range');
+
+    let pos = fcClx;
+    const end = fcClx + lcbClx;
+    let plcPcd = null, guard = 0;
+    while(pos < end && guard < 100000){
+      guard++;
+      const clxt = tv.getUint8(pos);
+      if(clxt === 1){
+        pos += 1;
+        const cb = tv.getUint16(pos, true);
+        pos += 2 + cb;
+      } else if(clxt === 2){
+        pos += 1;
+        const lcb = tv.getUint32(pos, true);
+        pos += 4;
+        plcPcd = table.subarray(pos, pos+lcb);
+        break;
+      } else break;
+    }
+    if(!plcPcd) throw new Error('piece table not found');
+
+    const n = Math.floor((plcPcd.length - 4) / 12);
+    if(n <= 0) throw new Error('empty piece table');
+    const pv = new DataView(plcPcd.buffer, plcPcd.byteOffset, plcPcd.byteLength);
+    const cps = [];
+    for(let i=0;i<=n;i++) cps.push(pv.getUint32(i*4, true));
+    const pcdStart = 4*(n+1);
+    const decU16 = new TextDecoder('utf-16le');
+    const dec1252 = new TextDecoder('windows-1252');
+
+    const segments = [];
+    for(let i=0;i<n;i++){
+      const base = pcdStart + i*8;
+      if(base+8 > plcPcd.length) break;
+      const fcRaw = pv.getUint32(base+2, true);
+      const compressed = (fcRaw & 0x40000000) !== 0;
+      let fc = fcRaw & 0x3FFFFFFF;
+      if(compressed) fc = Math.floor(fc/2);
+      const count = cps[i+1] - cps[i];
+      if(count <= 0) continue;
+      const unitSize = compressed ? 1 : 2;
+      const pieceByteLen = count * unitSize;
+      if(fc + pieceByteLen > wd.length) continue;
+
+      let cursor = fc;
+      const pieceEnd = fc + pieceByteLen;
+      let idx = findColorRunIndex(colorRuns, fc);
+      let safety = 0;
+      while(cursor < pieceEnd && safety < 100000){
+        safety++;
+        let color = null, runEnd = pieceEnd;
+        const r = idx < colorRuns.length ? colorRuns[idx] : null;
+        if(r && cursor >= r.fcStart){
+          color = r.color;
+          runEnd = Math.min(pieceEnd, r.fcEnd);
+          idx++;
+        } else if(r){
+          runEnd = Math.min(pieceEnd, r.fcStart);
+        }
+        const chunkLen = runEnd - cursor;
+        if(chunkLen <= 0){ cursor = runEnd + 1; continue; }
+        const charLen = Math.floor(chunkLen / unitSize);
+        const byteLen = charLen * unitSize;
+        if(byteLen > 0){
+          const text = compressed
+            ? dec1252.decode(wd.subarray(cursor, cursor+byteLen))
+            : decU16.decode(wd.subarray(cursor, cursor+byteLen));
+          segments.push({ text, color });
+        }
+        cursor += Math.max(byteLen, chunkLen);
+      }
+    }
+    return segments;
+  }
+
+  // Applies the same control-character rules as cleanupWordControlChars
+  // (field-code stripping, tab/line-break/paragraph-mark conversion) but
+  // char-by-char across segment boundaries, so a field code split across
+  // two differently-colored runs still gets dropped correctly, and merges
+  // adjacent same-color text as it goes.
+  function cleanupColoredSegments(segments){
+    const out = [];
+    let fieldDepth = 0;
+    let cur = null;
+    function push(str, color){
+      if(cur && cur.color === color){ cur.text += str; return; }
+      if(cur) out.push(cur);
+      cur = { text: str, color };
+    }
+    segments.forEach(seg => {
+      for(const ch of seg.text){
+        const code = ch.codePointAt(0);
+        if(code === 0x13){ fieldDepth++; continue; }
+        if(code === 0x14){ if(fieldDepth>0) fieldDepth--; continue; }
+        if(fieldDepth > 0) continue;
+        if(code === 0x00 || code === 0x15) continue;
+        if(code === 0x07){ push('\t', seg.color); continue; }
+        if(code === 0x0b){ push('\n', seg.color); continue; }
+        if(code === 0x0c){ push('\n\n', seg.color); continue; }
+        if(code === 0x1e){ push('-', seg.color); continue; }
+        if(code === 0x1f) continue;
+        if(ch === '\r'){ push('\n\n', seg.color); continue; }
+        push(ch, seg.color);
+      }
+    });
+    if(cur) out.push(cur);
+    return out;
+  }
+
+  function coloredSegmentsToHtml(segments){
+    let html = segments.map(seg => {
+      const escaped = escapeHtml(seg.text).replace(/\n/g, '<br>');
+      return seg.color ? ('<span style="color:' + seg.color + '">' + escaped + '</span>') : escaped;
+    }).join('');
+    html = html.replace(/(<br>\s*){3,}/g, '<br><br>');
+    html = html.replace(/^(<br>)+/, '').replace(/(<br>)+$/, '');
+    return html;
+  }
+
+  // Full colored .doc path: WordDocument stream -> PlcfBteChpx -> CHPX
+  // color runs -> piece table split by those runs -> cleaned HTML. Any
+  // failure anywhere in this chain throws, and the caller (extractDocFragment)
+  // falls back to the plain extractLegacyDocText path below — so this can
+  // only add color, never break what already worked.
+  async function extractLegacyDocColorFragment(file){
+    const buffer = await file.arrayBuffer();
+    const ole = parseOleFile(buffer);
+    const wd = ole.getStream('WordDocument');
+    if(!wd || wd.length < 32) throw new Error('missing WordDocument stream');
+    const dv = new DataView(wd.buffer, wd.byteOffset, wd.byteLength);
+    if(dv.getUint16(0, true) !== 0xA5EC) throw new Error('not a Word .doc file');
+
+    const colorRuns = buildDocColorRuns(ole, wd, dv);
+    const segments = extractDocViaPieceTableColored(ole, wd, dv, colorRuns);
+    if(!segments.length) throw new Error('no readable text found in this .doc file');
+    const cleaned = cleanupColoredSegments(segments);
+    const html = coloredSegmentsToHtml(cleaned);
+    if(!html || !html.replace(/<[^>]+>/g,'').trim()) throw new Error('no readable text found in this .doc file');
+    return html;
+  }
+
+  // Tries the colored path first; returns null (rather than throwing) on
+  // any failure so the caller falls back to the plain-text .doc reader.
+  async function extractDocFragment(file){
+    try{ return await extractLegacyDocColorFragment(file); }
+    catch(err){ return null; }
+  }
+
+  async function extractLegacyDocText(file){
+    const buffer = await file.arrayBuffer();
+    const ole = parseOleFile(buffer);
+    const wd = ole.getStream('WordDocument');
+    if(!wd || wd.length < 32) throw new Error('missing WordDocument stream');
+    const dv = new DataView(wd.buffer, wd.byteOffset, wd.byteLength);
+    if(dv.getUint16(0, true) !== 0xA5EC) throw new Error('not a Word .doc file');
+
+    let text = '';
+    try{ text = extractDocViaPieceTable(ole, wd, dv); } catch(e){ text = ''; }
+    if(!text || !text.trim()) text = extractDocViaFcMinMac(wd, dv);
+    if(!text || !text.trim()) throw new Error('no readable text found in this .doc file');
+    return cleanupWordControlChars(text);
   }
 
   // Reads a paragraph's runs and rebuilds them as HTML, wrapping any run
@@ -1500,7 +1999,11 @@
     }
 
     if(name.endsWith('.doc')){
-      throw new Error('The old .doc format isn\'t supported — resave it as .docx (or .txt) and try again.');
+      try{
+        return await extractLegacyDocText(file);
+      } catch(err){
+        throw new Error('Could not read that .doc file (' + (err.message || 'parse error') + ').\n\nIf this keeps happening, resave it as .docx from Word and try again.');
+      }
     }
 
     if(name.endsWith('.pdf')){
@@ -1517,7 +2020,7 @@
       return text;
     }
 
-    throw new Error('Unsupported file type: ' + file.name + '\n\nTry .docx, .pdf, .txt, or .md.');
+    throw new Error('Unsupported file type: ' + file.name + '\n\nTry .docx, .doc, .pdf, .txt, or .md.');
   }
 
   // Turns plain extracted text into the same kind of markup the editor
@@ -1580,6 +2083,14 @@
       if(file.name.toLowerCase().endsWith('.docx')){
         const html = await extractDocxFragment(file);
         insertUploadedHtml(html);
+      } else if(file.name.toLowerCase().endsWith('.doc')){
+        const html = await extractDocFragment(file);
+        if(html){
+          insertUploadedHtml(html);
+        } else {
+          const text = await extractTextFromFile(file);
+          insertUploadedText(text);
+        }
       } else {
         const text = await extractTextFromFile(file);
         insertUploadedText(text);
