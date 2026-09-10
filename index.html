@@ -1411,10 +1411,85 @@
     await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
   }
 
+  async function ensureJSZip(){
+    if(window.JSZip) return;
+    await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+  }
+
   async function ensurePdfJs(){
     if(window.pdfjsLib) return;
     await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  function escapeHtml(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // Reads a paragraph's runs and rebuilds them as HTML, wrapping any run
+  // that has an explicit <w:color> in a <span style="color:...">, so the
+  // editor renders it exactly like a manually-applied highlight color.
+  function docxParagraphToHtml(p){
+    const runs = Array.from(p.getElementsByTagName('w:r'));
+    let html = '';
+    runs.forEach(r => {
+      const rPr = r.getElementsByTagName('w:rPr')[0];
+      let color = null;
+      if(rPr){
+        const colorEl = rPr.getElementsByTagName('w:color')[0];
+        if(colorEl){
+          const val = colorEl.getAttribute('w:val');
+          if(val && /^[0-9a-fA-F]{6}$/.test(val)) color = '#' + val;
+        }
+      }
+      let text = '';
+      Array.from(r.children).forEach(node => {
+        if(node.tagName === 'w:t') text += escapeHtml(node.textContent);
+        else if(node.tagName === 'w:tab') text += '\t';
+        else if(node.tagName === 'w:br' || node.tagName === 'w:cr') text += '<br>';
+      });
+      if(!text) return;
+      html += color ? ('<span style="color:' + color + '">' + text + '</span>') : text;
+    });
+    return html;
+  }
+
+  // Parses the .docx's own document.xml directly (docx is just a zip of
+  // XML files) instead of going through mammoth's plain-text extractor,
+  // so each run's actual <w:color> survives into the script as an inline
+  // color span — the same markup the highlight swatches already produce.
+  async function extractDocxColorFragment(file){
+    await ensureJSZip();
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await window.JSZip.loadAsync(arrayBuffer);
+    const entry = zip.file('word/document.xml');
+    if(!entry) throw new Error('missing document.xml');
+    const xmlText = await entry.async('text');
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if(doc.querySelector('parsererror')) throw new Error('xml parse error');
+    const paragraphs = Array.from(doc.getElementsByTagName('w:p'));
+    if(!paragraphs.length) throw new Error('no paragraphs found');
+    return paragraphs.map(docxParagraphToHtml).join('<br><br>');
+  }
+
+  // Falls back to mammoth's plain-text extraction (no color, but still
+  // readable) if the .docx's XML doesn't parse the way extractDocxColorFragment
+  // expects — e.g. an unusual document structure.
+  async function extractDocxPlainFragment(file){
+    try{ await ensureMammoth(); }
+    catch(err){ throw new Error('Could not load the .docx reader — check your internet connection and try again.'); }
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await window.mammoth.extractRawText({ arrayBuffer });
+    const normalized = result.value.replace(/\n{3,}/g, '\n\n');
+    return normalized.split(/\r\n|\r|\n/).map(escapeHtml).join('<br>');
+  }
+
+  async function extractDocxFragment(file){
+    try{
+      return await extractDocxColorFragment(file);
+    } catch(err){
+      return await extractDocxPlainFragment(file);
+    }
   }
 
   async function extractTextFromFile(file){
@@ -1422,19 +1497,6 @@
 
     if(name.endsWith('.txt') || name.endsWith('.md')){
       return await file.text();
-    }
-
-    if(name.endsWith('.docx')){
-      try{ await ensureMammoth(); }
-      catch(err){ throw new Error('Could not load the .docx reader — check your internet connection and try again.'); }
-      const arrayBuffer = await file.arrayBuffer();
-      const result = await window.mammoth.extractRawText({ arrayBuffer });
-      // mammoth emits "\n\n" after every paragraph, including empty ones
-      // Word uses purely for visual spacing — so a single blank line in
-      // the .docx turns into a double gap here. Collapse any run of 3+
-      // newlines down to a single blank line (2 newlines) so spacing
-      // matches what the document actually shows.
-      return result.value.replace(/\n{3,}/g, '\n\n');
     }
 
     if(name.endsWith('.doc')){
@@ -1489,14 +1551,39 @@
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  // Same as insertUploadedText, but for the .docx path which produces a
+  // small HTML string (color spans + <br>s) instead of plain text.
+  function insertUploadedHtml(htmlString){
+    const tmp = document.createElement('div');
+    tmp.innerHTML = htmlString;
+    if(!tmp.textContent.trim()){
+      alert('No readable text was found in that file.');
+      return;
+    }
+    const hasExisting = scriptInput.textContent.trim().length > 0;
+    if(hasExisting && !confirm('Add this to the end of your current script?\n\nOK = append · Cancel = replace what\'s there now')){
+      scriptInput.innerHTML = '';
+    } else if(hasExisting){
+      scriptInput.appendChild(document.createElement('br'));
+      scriptInput.appendChild(document.createElement('br'));
+    }
+    while(tmp.firstChild) scriptInput.appendChild(tmp.firstChild);
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
   async function handleUploadedFile(file){
     if(!file) return;
     const prevLabel = uploadFileBtn.textContent;
     uploadFileBtn.disabled = true;
     uploadFileBtn.textContent = 'reading…';
     try{
-      const text = await extractTextFromFile(file);
-      insertUploadedText(text);
+      if(file.name.toLowerCase().endsWith('.docx')){
+        const html = await extractDocxFragment(file);
+        insertUploadedHtml(html);
+      } else {
+        const text = await extractTextFromFile(file);
+        insertUploadedText(text);
+      }
     } catch(err){
       alert(err.message || 'Could not read that file.');
     } finally {
