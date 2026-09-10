@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-title" content="Prompter">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&family=Roboto:wght@400;500&family=Red+Hat+Display:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
   html[data-theme="dark"]{
     --bg: #191c1b;
@@ -315,7 +315,7 @@
     justify-content:center;
     text-align:center;
     padding:0 60px;
-    font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-family:'Red Hat Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     font-weight:700;
     font-size:clamp(24px, 4vw, 44px);
     color:var(--phosphor);
@@ -547,8 +547,31 @@
     flex:1;
     overflow:hidden;
     position:relative;
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
-            mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+  }
+  /* Top/bottom fade, done as static overlays instead of a mask-image on
+     the scrolling layer. A mask on an element that's being transformed
+     every animation frame forces many browsers (especially on phones)
+     to re-rasterize the whole masked region each frame instead of just
+     compositing a translate — that's what caused the stutter/jumpiness
+     during auto-scroll. These overlays don't move and don't need to be
+     repainted as the text scrolls underneath them, so the scroll itself
+     stays a cheap, smooth, compositor-only transform. */
+  #viewport::before,
+  #viewport::after{
+    content:"";
+    position:absolute;
+    left:0; right:0;
+    height:10%;
+    pointer-events:none;
+    z-index:3;
+  }
+  #viewport::before{
+    top:0;
+    background:linear-gradient(to bottom, var(--stage-bg) 0%, transparent 100%);
+  }
+  #viewport::after{
+    bottom:0;
+    background:linear-gradient(to top, var(--stage-bg) 0%, transparent 100%);
   }
 
   #centerLine{
@@ -564,7 +587,10 @@
   #scrollTrack{
     position:absolute;
     left:0; right:0; top:0;
+    z-index:1;
     will-change:transform;
+    transform:translateZ(0);
+    backface-visibility:hidden;
     padding:0 var(--stage-margin);
   }
   #scrollTrack .pad-top{
@@ -763,7 +789,7 @@
 
     <div class="upload-row">
       <button type="button" class="neu-btn" id="uploadFileBtn">+ upload file</button>
-      <span class="upload-hint"> WAG MUNA GAMITIN MAY ISSUE PA, OKAY OKAY???? - ALJON</span>
+      <span class="upload-hint">.docx · .pdf · .txt — or just drop it on the box below</span>
       <input type="file" id="fileInput" accept=".docx,.pdf,.txt,.md" style="display:none">
     </div>
 
@@ -1403,7 +1429,12 @@
       catch(err){ throw new Error('Could not load the .docx reader — check your internet connection and try again.'); }
       const arrayBuffer = await file.arrayBuffer();
       const result = await window.mammoth.extractRawText({ arrayBuffer });
-      return result.value;
+      // mammoth emits "\n\n" after every paragraph, including empty ones
+      // Word uses purely for visual spacing — so a single blank line in
+      // the .docx turns into a double gap here. Collapse any run of 3+
+      // newlines down to a single blank line (2 newlines) so spacing
+      // matches what the document actually shows.
+      return result.value.replace(/\n{3,}/g, '\n\n');
     }
 
     if(name.endsWith('.doc')){
@@ -1605,7 +1636,7 @@
     lastTime = ts;
 
     posY += speedToPxPerSec(speed) * dt;
-    scrollTrack.style.transform = 'translateY(-' + posY + 'px)';
+    scrollTrack.style.transform = 'translateY(-' + Math.round(posY) + 'px)';
 
     const maxScroll = scrollTrack.scrollHeight - viewport.clientHeight;
     if(posY < maxScroll + 200){
@@ -1643,57 +1674,62 @@
     sizeVal.textContent = fontSize;
   });
 
-  // ---- manual nudge with arrow keys: eases the script up/down over a
-  // short glide instead of snapping straight to the new position, so it
-  // reads like scrolling rather than a jump cut. Composes additively with
-  // whatever the auto-scroll (tick) is doing, so it also works while
-  // playing, not just when paused. ----
-  const NUDGE_STEP = 60;    // total px covered by one key press
-  const NUDGE_DURATION = 220; // ms for the glide to complete
-  let nudgeState = null;
+  // ---- manual scroll with arrow keys: moves continuously at a steady
+  // speed for as long as the key is held, like dragging a scrollbar.
+  // (Previously this restarted a short 220ms ease animation on every
+  // OS key-repeat event — which fires every 30-50ms while a key is held
+  // — so it kept cutting itself off and re-accelerating from zero many
+  // times a second, which looked like vibrating instead of scrolling.
+  // Tracking held state and running one continuous rAF loop fixes that.)
+  // Composes additively with whatever the auto-scroll (tick) is doing,
+  // so it also works while playing, not just when paused. ----
+  const ARROW_SPEED = 700;  // px/sec once at full speed
+  const ARROW_RAMP = 120;   // ms to reach full speed, avoids a jump on press
+  let arrowDir = 0;         // -1 = up, 1 = down, 0 = not held
+  let arrowRafId = null;
+  let arrowStartTime = null;
+  let arrowLastTs = null;
 
-  function nudgeStep(ts){
-    if(!nudgeState) return;
-    if(nudgeState.startTime === null) nudgeState.startTime = ts;
-    const elapsed = ts - nudgeState.startTime;
-    const t = Math.min(1, elapsed / NUDGE_DURATION);
-    const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
-    const targetApplied = nudgeState.totalDelta * eased;
-    const deltaThisFrame = targetApplied - nudgeState.applied;
-    nudgeState.applied = targetApplied;
+  function arrowTick(ts){
+    if(arrowDir === 0){ arrowRafId = null; return; }
+    if(arrowStartTime === null) arrowStartTime = ts;
+    if(arrowLastTs === null) arrowLastTs = ts;
+    const dt = (ts - arrowLastTs) / 1000;
+    arrowLastTs = ts;
+
+    const ramp = Math.min(1, (ts - arrowStartTime) / ARROW_RAMP);
+    const pxPerSec = ARROW_SPEED * ramp;
 
     const maxScroll = Math.max(0, scrollTrack.scrollHeight - viewport.clientHeight) + 200;
-    posY = Math.min(maxScroll, Math.max(0, posY + deltaThisFrame));
-    scrollTrack.style.transform = 'translateY(-' + posY + 'px)';
+    posY = Math.min(maxScroll, Math.max(0, posY + arrowDir * pxPerSec * dt));
+    scrollTrack.style.transform = 'translateY(-' + Math.round(posY) + 'px)';
 
-    if(t < 1){
-      nudgeState.rafId = requestAnimationFrame(nudgeStep);
-    } else {
-      nudgeState = null;
-    }
+    arrowRafId = requestAnimationFrame(arrowTick);
   }
 
-  function nudgePosition(delta){
-    if(nudgeState){
-      cancelAnimationFrame(nudgeState.rafId);
-    }
-    nudgeState = { startTime: null, totalDelta: delta, applied: 0, rafId: null };
-    nudgeState.rafId = requestAnimationFrame(nudgeStep);
+  function startArrowScroll(dir){
+    if(arrowDir === dir) return; // already moving this way, ignore repeats
+    arrowDir = dir;
+    arrowStartTime = null;
+    arrowLastTs = null;
+    if(!arrowRafId) arrowRafId = requestAnimationFrame(arrowTick);
+  }
+
+  function stopArrowScroll(dir){
+    if(arrowDir !== dir) return;
+    arrowDir = 0;
   }
 
   // ---- mouse wheel / trackpad scroll while the prompter is running:
   // moves the script directly by the wheel delta, on top of whatever
-  // auto-scroll (tick) or nudge is already doing. ----
+  // auto-scroll (tick) or arrow-scroll is already doing. ----
   viewport.addEventListener('wheel', (e) => {
     if(!stage.classList.contains('active')) return;
     e.preventDefault();
-    if(nudgeState){
-      cancelAnimationFrame(nudgeState.rafId);
-      nudgeState = null;
-    }
+    arrowDir = 0;
     const maxScroll = Math.max(0, scrollTrack.scrollHeight - viewport.clientHeight) + 200;
     posY = Math.min(maxScroll, Math.max(0, posY + e.deltaY));
-    scrollTrack.style.transform = 'translateY(-' + posY + 'px)';
+    scrollTrack.style.transform = 'translateY(-' + Math.round(posY) + 'px)';
   }, { passive:false });
 
   exitBtn.addEventListener('click', exitPrompter);
@@ -1701,6 +1737,7 @@
 
   function exitPrompter(){
     pause();
+    arrowDir = 0;
     stage.classList.remove('active');
     setup.style.display = 'flex';
   }
@@ -1713,13 +1750,18 @@
       playing ? pause() : play();
     } else if(e.code === 'ArrowUp'){
       e.preventDefault();
-      nudgePosition(-NUDGE_STEP);
+      if(!e.repeat) startArrowScroll(-1);
     } else if(e.code === 'ArrowDown'){
       e.preventDefault();
-      nudgePosition(NUDGE_STEP);
+      if(!e.repeat) startArrowScroll(1);
     } else if(e.code === 'Escape'){
       exitPrompter();
     }
+  });
+
+  document.addEventListener('keyup', (e) => {
+    if(e.code === 'ArrowUp') stopArrowScroll(-1);
+    else if(e.code === 'ArrowDown') stopArrowScroll(1);
   });
 
   // ---- PWA: register service worker so the browser offers "Install" ----
