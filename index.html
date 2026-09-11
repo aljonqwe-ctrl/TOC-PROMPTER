@@ -99,6 +99,19 @@
     padding:24px;
     gap:28px;
     overflow-y:auto;
+    overflow-x:hidden;
+  }
+  /* When the setup content is taller than the browser window (smaller/
+     lower-resolution monitors, e.g. a 1080p 21" screen vs. a 1440p 27"),
+     plain `justify-content:center` on an overflowing flex container clips
+     the top of the content and it can't be reached by scrolling in most
+     browsers — the only workaround is zooming out. `safe center` keeps the
+     centering when everything fits, but falls back to top-aligned +
+     scrollable the moment it doesn't, so the whole page stays reachable at
+     100% zoom on any monitor. Browsers that don't understand `safe center`
+     ignore this line and keep the plain `center` above. */
+  #setup{
+    justify-content:safe center;
   }
 
   .setup-layout{
@@ -274,6 +287,15 @@
     .script-sidebar{ width:100%; max-height:220px; }
   }
 
+  /* Shorter browser windows (lower-resolution monitors, smaller laptop
+     screens) get tighter spacing so more of the setup screen fits without
+     scrolling in the first place. */
+  @media (max-height:820px){
+    #setup{ padding:14px; gap:16px; }
+    .setup-inner{ gap:12px; }
+    #scriptInput{ min-height:clamp(130px, 26vh, 220px); }
+  }
+
   .brand{
     display:flex;
     align-items:center;
@@ -352,7 +374,7 @@
   }
   #scriptInput{
     width:100%;
-    min-height:280px;
+    min-height:clamp(160px, 34vh, 280px);
     max-height:50vh;
     overflow-y:auto;
     resize:vertical;
