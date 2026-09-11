@@ -1,4 +1,4 @@
-const CACHE_NAME = 'prompter-cache-v1';
+const CACHE_NAME = 'prompter-cache-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -26,6 +26,15 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+
+  // Only cache the app's own shell (this origin, on GitHub Pages).
+  // Anything else — most importantly calls to the Google Apps Script
+  // backend (CLOUD_URL, a different origin) — is left alone entirely,
+  // so "list" / "load" / "trash" always hit the live sheet instead of
+  // risking a stale cached response.
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       const fetchPromise = fetch(event.request)
