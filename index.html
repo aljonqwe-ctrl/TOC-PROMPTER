@@ -1298,6 +1298,15 @@
         setCloudStatus('deleting…');
         try{
           await cloudPost({ action: 'delete', id: s.id });
+          // Force the next trash view to re-fetch from the sheet,
+          // rather than trusting the cached list — this is what
+          // reconciles the optimistic entry above with the real
+          // deletedAt timestamp the backend just wrote.
+          trashLoaded = false;
+          if(trashOpen){
+            await loadDeletedScripts();
+            renderTrash();
+          }
           setCloudStatus('');
         } catch(err){
           setCloudStatus('⚠ delete failed on the sheet');
@@ -1387,7 +1396,15 @@
   async function loadDeletedScripts(){
     try{
       const list = await cloudGet('trash');
-      deletedScripts = Array.isArray(list) ? list : [];
+      const serverList = Array.isArray(list) ? list : [];
+      // Merge rather than overwrite: if a delete's cloudPost is still
+      // in flight (or the sheet just hasn't caught up yet) when this
+      // GET resolves, the server list won't include it yet. Keep any
+      // locally-known deleted items the server hasn't caught up to,
+      // so they don't flicker out of the tray.
+      const serverIds = new Set(serverList.map(s => s.id));
+      const pendingLocal = deletedScripts.filter(s => !serverIds.has(s.id));
+      deletedScripts = pendingLocal.concat(serverList);
       trashLoaded = true;
     } catch(err){
       // leave whatever we had (likely empty) — trash is a secondary
