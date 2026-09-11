@@ -196,6 +196,70 @@
     line-height:1.5;
   }
 
+  .trash-toggle{
+    width:100%;
+    padding:8px;
+    font-size:11px;
+    letter-spacing:.5px;
+    color:var(--text-dim);
+    background:transparent;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+  }
+  .trash-toggle:hover{ color:var(--phosphor); }
+  .trash-toggle .caret{
+    display:inline-block;
+    transition:transform .15s ease;
+    font-size:9px;
+  }
+  .trash-toggle.open .caret{ transform:rotate(90deg); }
+
+  .trash-section{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    overflow-y:auto;
+    padding:2px;
+  }
+  .trash-item{
+    display:flex;
+    align-items:center;
+    gap:4px;
+    padding:4px 4px 4px 10px;
+    opacity:.75;
+  }
+  .trash-item .trash-name{
+    flex:1;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:12px;
+    padding:6px 2px;
+  }
+  .trash-item .restore-btn,
+  .trash-item .purge-btn{
+    flex-shrink:0;
+    background:none;
+    border:none;
+    color:var(--text-dim);
+    cursor:pointer;
+    font-size:11px;
+    padding:4px 6px;
+    border-radius:6px;
+    white-space:nowrap;
+  }
+  .trash-item .restore-btn:hover{ color:var(--phosphor); }
+  .trash-item .purge-btn:hover{ color:var(--danger); }
+  .trash-empty-hint{
+    font-size:11px;
+    color:var(--text-dim);
+    padding:8px 6px;
+    line-height:1.5;
+  }
+
   .setup-inner{
     width:100%;
     min-width:0;
@@ -357,6 +421,27 @@
     color:var(--phosphor);
     font-size:13px;
   }
+  /* fields that only take effect once you hit START — nothing here is
+     actually disabled, they're just visually muted so it's clear you
+     won't see a live preview on this screen */
+  .field.preview-on-start{
+    opacity:.55;
+  }
+  .field.preview-on-start:hover,
+  .field.preview-on-start:focus-within{
+    opacity:1;
+  }
+  .field.preview-on-start label{
+    position:relative;
+  }
+  .field.preview-on-start label::after{
+    content:'▶ on start';
+    margin-left:6px;
+    font-size:9px;
+    letter-spacing:.5px;
+    color:var(--phosphor-dim);
+    white-space:nowrap;
+  }
   .field input[type=checkbox]{
     accent-color:var(--phosphor);
   }
@@ -429,31 +514,6 @@
     box-shadow: 2px 2px 5px var(--shadow-dark), -2px -2px 5px var(--shadow-light);
   }
   .swatch:hover{ outline:1.5px solid var(--phosphor); }
-  .swatch.custom-wrap{
-    position:relative;
-    width:22px;
-    height:22px;
-    border-radius:7px;
-    border:1px dashed var(--phosphor-dim);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    color:var(--phosphor-dim);
-    font-size:13px;
-    cursor:pointer;
-    overflow:hidden;
-    background:var(--bg);
-  }
-  .swatch.custom-wrap input[type=color]{
-    position:absolute;
-    inset:-4px;
-    width:200%;
-    height:200%;
-    border:none;
-    padding:0;
-    cursor:pointer;
-    background:transparent;
-  }
   #clearColorBtn{
     background:var(--bg);
     border:1px solid var(--line);
@@ -781,6 +841,8 @@
       <div id="cloudStatus" style="font-size:10px;color:var(--text-dim);min-height:14px;padding:0 2px;"></div>
       <button type="button" class="neu-btn" id="addScriptBtn">+ add script</button>
       <div class="script-list" id="scriptList"></div>
+      <button type="button" class="trash-toggle" id="trashToggle"><span class="caret">▸</span><span id="trashToggleLabel">recently deleted</span></button>
+      <div class="trash-section" id="trashSection" style="display:none;"></div>
     </div>
     <div class="setup-inner">
     <div class="brand">
@@ -821,10 +883,6 @@
       <button class="swatch" data-color="#4dc3ff" style="background:#4dc3ff" title="blue"></button>
       <button class="swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="orange"></button>
       <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="white"></button>
-      <label class="swatch custom-wrap" title="custom color">
-        +
-        <input type="color" id="customColor" value="#34c3ff">
-      </label>
       <button id="clearColorBtn">clear color</button>
     </div>
 
@@ -834,28 +892,28 @@
         <input type="range" id="fontSize" value="128" min="16" max="140" step="2">
         <span class="val" id="fontSizeVal">128</span>
       </div>
-      <div class="field">
+      <div class="field preview-on-start">
         <label for="speedInit">speed</label>
         <input type="range" id="speedInit" value="4" min="1" max="20" step="1">
         <span class="val" id="speedInitVal">4</span>
       </div>
-      <div class="field">
+      <div class="field preview-on-start">
         <label for="mirrorInit">mirror</label>
         <input type="checkbox" id="mirrorInit">
       </div>
-      <div class="field">
+      <div class="field preview-on-start">
         <label for="alignInit">align</label>
         <select id="alignInit">
           <option value="center">center</option>
           <option value="left" selected>left</option>
         </select>
       </div>
-      <div class="field">
+      <div class="field preview-on-start">
         <label for="spacingInit">line spacing</label>
         <input type="range" id="spacingInit" value="1" min="1" max="3" step="0.1">
         <span class="val" id="spacingInitVal">1</span>
       </div>
-      <div class="field">
+      <div class="field preview-on-start">
         <label for="guideInit">center guide</label>
         <input type="checkbox" id="guideInit">
       </div>
@@ -875,7 +933,7 @@
           <option value="'Courier New', Courier, monospace" data-weight="400">Courier (mono)</option>
         </select>
       </div>
-      <div class="field">
+      <div class="field preview-on-start">
         <label for="marginInit">canvas width</label>
         <input type="range" id="marginInit" value="3" min="1" max="16" step="0.5">
         <span class="val" id="marginInitVal">3</span>
@@ -904,10 +962,6 @@
     <button class="swatch" data-color="#4dc3ff" style="background:#4dc3ff" title="blue"></button>
     <button class="swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="orange"></button>
     <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="white"></button>
-    <label class="swatch custom-wrap" title="custom color">
-      +
-      <input type="color" id="ctxCustomColor" value="#34c3ff">
-    </label>
   </div>
   <div class="ctx-divider"></div>
   <button type="button" class="ctx-item" id="ctxClear">Clear formatting</button>
@@ -984,7 +1038,6 @@
   const centerLine = document.getElementById('centerLine');
   const exitBtn = document.getElementById('exitBtn');
   const exitHoverBtn = document.getElementById('exitHoverBtn');
-  const customColor = document.getElementById('customColor');
   const clearColorBtn = document.getElementById('clearColorBtn');
   const boldBtn = document.getElementById('boldBtn');
   const underlineBtn = document.getElementById('underlineBtn');
@@ -1001,9 +1054,11 @@
   const ctxUppercaseBtn = document.getElementById('ctxUppercase');
   const ctxSentenceCaseBtn = document.getElementById('ctxSentenceCase');
   const ctxClearBtn = document.getElementById('ctxClear');
-  const ctxCustomColor = document.getElementById('ctxCustomColor');
   const scriptListEl = document.getElementById('scriptList');
   const addScriptBtn = document.getElementById('addScriptBtn');
+  const trashToggle = document.getElementById('trashToggle');
+  const trashToggleLabel = document.getElementById('trashToggleLabel');
+  const trashSectionEl = document.getElementById('trashSection');
   const undoBtn = document.getElementById('undoBtn');
   const redoBtn = document.getElementById('redoBtn');
   const uploadFileBtn = document.getElementById('uploadFileBtn');
@@ -1106,6 +1161,14 @@
   const scriptsCache = new Map(); // id -> html, filled in as scripts are opened/edited
   let currentScriptId = null;
   let autosaveTimer = null;
+
+  // ---- "recently deleted" tray: delete now just soft-deletes on the
+  // sheet (see Code.gs), so this panel lists what's in the trash and
+  // lets you restore it or delete it forever. Loaded lazily the first
+  // time the tray is opened, since most sessions never need it. ----
+  let deletedScripts = [];     // [{id, name, deletedAt}]
+  let trashOpen = false;
+  let trashLoaded = false;
 
   const cloudStatusEl = document.getElementById('cloudStatus');
   function setCloudStatus(text){
@@ -1219,7 +1282,7 @@
       delBtn.textContent = '✕';
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if(!confirm('Delete "' + s.name + '"?')) return;
+        if(!confirm('Delete "' + s.name + '"? You can restore it from "recently deleted".')) return;
         savedScripts = savedScripts.filter(x => x.id !== s.id);
         scriptsCache.delete(s.id);
         if(currentScriptId === s.id){
@@ -1227,7 +1290,11 @@
           scriptInput.innerHTML = '';
           startBtn.disabled = true;
         }
+        // optimistically drop it in the trash tray so it shows up there
+        // immediately even before the sheet round-trip finishes
+        deletedScripts.unshift({ id: s.id, name: s.name, deletedAt: new Date().toISOString() });
         renderScriptList();
+        renderTrash();
         setCloudStatus('deleting…');
         try{
           await cloudPost({ action: 'delete', id: s.id });
@@ -1243,6 +1310,102 @@
       scriptListEl.appendChild(item);
     });
   }
+
+  function trashDateLabel_(iso){
+    if(!iso) return '';
+    const d = new Date(iso);
+    if(isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+  }
+
+  function renderTrash(){
+    trashToggleLabel.textContent = 'recently deleted' + (deletedScripts.length ? ' (' + deletedScripts.length + ')' : '');
+    if(!trashOpen) return;
+    trashSectionEl.innerHTML = '';
+    if(deletedScripts.length === 0){
+      const hint = document.createElement('div');
+      hint.className = 'trash-empty-hint';
+      hint.textContent = 'nothing in the trash';
+      trashSectionEl.appendChild(hint);
+      return;
+    }
+    deletedScripts.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'trash-item neu-inset';
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'trash-name';
+      nameEl.textContent = s.name;
+      nameEl.title = 'deleted ' + trashDateLabel_(s.deletedAt);
+
+      const restoreBtn = document.createElement('button');
+      restoreBtn.type = 'button';
+      restoreBtn.className = 'restore-btn';
+      restoreBtn.title = 'restore script';
+      restoreBtn.textContent = '↺ restore';
+      restoreBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        deletedScripts = deletedScripts.filter(x => x.id !== s.id);
+        savedScripts.push({ id: s.id, name: s.name });
+        renderTrash();
+        renderScriptList();
+        setCloudStatus('restoring…');
+        try{
+          await cloudPost({ action: 'restore', id: s.id });
+          setCloudStatus('');
+        } catch(err){
+          setCloudStatus('⚠ restore failed on the sheet');
+        }
+      });
+
+      const purgeBtn = document.createElement('button');
+      purgeBtn.type = 'button';
+      purgeBtn.className = 'purge-btn';
+      purgeBtn.title = 'delete forever';
+      purgeBtn.textContent = '⨯ forever';
+      purgeBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if(!confirm('Permanently delete "' + s.name + '"? This can\'t be undone.')) return;
+        deletedScripts = deletedScripts.filter(x => x.id !== s.id);
+        renderTrash();
+        setCloudStatus('deleting forever…');
+        try{
+          await cloudPost({ action: 'purge', id: s.id });
+          setCloudStatus('');
+        } catch(err){
+          setCloudStatus('⚠ permanent delete failed on the sheet');
+        }
+      });
+
+      item.appendChild(nameEl);
+      item.appendChild(restoreBtn);
+      item.appendChild(purgeBtn);
+      trashSectionEl.appendChild(item);
+    });
+  }
+
+  async function loadDeletedScripts(){
+    try{
+      const list = await cloudGet('trash');
+      deletedScripts = Array.isArray(list) ? list : [];
+      trashLoaded = true;
+    } catch(err){
+      // leave whatever we had (likely empty) — trash is a secondary
+      // feature, so fail quietly rather than stomping cloudStatus
+    }
+  }
+
+  trashToggle.addEventListener('click', async () => {
+    trashOpen = !trashOpen;
+    trashToggle.classList.toggle('open', trashOpen);
+    trashSectionEl.style.display = trashOpen ? 'flex' : 'none';
+    if(trashOpen && !trashLoaded){
+      setCloudStatus('loading trash…');
+      await loadDeletedScripts();
+      setCloudStatus('');
+    }
+    renderTrash();
+  });
 
   async function selectScript(id){
     const s = savedScripts.find(x => x.id === id);
@@ -1502,7 +1665,6 @@
   ctxMenu.querySelectorAll('.swatch[data-color]').forEach(btn => {
     btn.addEventListener('click', hideCtxMenu);
   });
-  ctxCustomColor.addEventListener('input', () => { applyColor(ctxCustomColor.value); hideCtxMenu(); });
 
   // ---- line spacing + center guide ----
   spacingInitField.addEventListener('input', () => { spacingInitVal.textContent = spacingInitField.value; });
@@ -2359,11 +2521,6 @@
     btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep selection
     btn.addEventListener('click', () => applyColor(btn.getAttribute('data-color')));
   });
-
-  customColor.addEventListener('mousedown', (e) => {
-    // don't lose the text selection when opening the color input
-  });
-  customColor.addEventListener('input', () => applyColor(customColor.value));
 
   clearColorBtn.addEventListener('mousedown', (e) => e.preventDefault());
   clearColorBtn.addEventListener('click', () => applyColor('#34c3ff'));
