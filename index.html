@@ -772,6 +772,7 @@
   <div class="setup-layout">
     <div class="script-sidebar neu-raise">
       <div class="sidebar-title">SAVED SCRIPTS</div>
+      <div id="cloudStatus" style="font-size:10px;color:var(--text-dim);min-height:14px;padding:0 2px;"></div>
       <button type="button" class="neu-btn" id="addScriptBtn">+ add script</button>
       <div class="script-list" id="scriptList"></div>
     </div>
@@ -997,27 +998,71 @@
   const uploadFileBtn = document.getElementById('uploadFileBtn');
   const fileInput = document.getElementById('fileInput');
 
-  // ---- saved scripts sidebar: multiple scripts stored in localStorage,
-  // switch between them, rename inline, delete, autosave edits back to
-  // whichever one is currently selected. ----
-  const SCRIPTS_KEY = 'prompter_saved_scripts_v1';
-  let savedScripts = [];
+  // ---- saved scripts sidebar: scripts are stored in a Google Sheet,
+  // reached through a small Google Apps Script "Web App" acting as a
+  // public API in front of it. No Google sign-in needed by the user —
+  // see CLOUD_URL / CLOUD_SECRET below and the accompanying Code.gs. ----
+
+  // PASTE the Web App URL you get after deploying Code.gs (Deploy > New
+  // deployment > Web app > Anyone can access). Looks like:
+  // https://script.google.com/macros/s/AKfycb.../exec
+  const CLOUD_URL = 'PASTE_YOUR_WEB_APP_URL_HERE';
+
+  // Must match the SECRET constant you set in Code.gs. This only stops
+  // accidental/casual overwrites from the UI — since this file is public
+  // on GitHub, anyone can read this value in the page source, so it is
+  // NOT real security against a determined person. Treat this sheet as
+  // a shared, semi-public scratchpad, not a private store.
+  const CLOUD_SECRET = 'PASTE_YOUR_SECRET_HERE';
+
+  let savedScripts = [];       // [{id, name}] — list only, html loaded lazily
+  const scriptsCache = new Map(); // id -> html, filled in as scripts are opened/edited
   let currentScriptId = null;
   let autosaveTimer = null;
 
-  function loadSavedScripts(){
-    try{
-      const raw = localStorage.getItem(SCRIPTS_KEY);
-      savedScripts = raw ? JSON.parse(raw) : [];
-      if(!Array.isArray(savedScripts)) savedScripts = [];
-    } catch(err){
-      savedScripts = [];
-    }
+  const cloudStatusEl = document.getElementById('cloudStatus');
+  function setCloudStatus(text){
+    if(cloudStatusEl) cloudStatusEl.textContent = text || '';
   }
 
-  function persistSavedScripts(){
-    try{ localStorage.setItem(SCRIPTS_KEY, JSON.stringify(savedScripts)); }
-    catch(err){ /* storage unavailable — fail silently, in-memory list still works */ }
+  async function cloudGet(action, params){
+    const url = new URL(CLOUD_URL);
+    url.searchParams.set('action', action);
+    Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
+    const res = await fetch(url.toString());
+    const data = await res.json();
+    if(data && data.error) throw new Error(data.error);
+    return data;
+  }
+
+  async function cloudPost(payload){
+    // text/plain content-type keeps this a "simple request" so the browser
+    // doesn't send a CORS preflight OPTIONS, which Apps Script can't answer.
+    const res = await fetch(CLOUD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ secret: CLOUD_SECRET }, payload))
+    });
+    const data = await res.json();
+    if(data && data.error) throw new Error(data.error);
+    return data;
+  }
+
+  async function loadSavedScripts(){
+    if(CLOUD_URL.indexOf('PASTE_YOUR') === 0){
+      setCloudStatus('⚠ set CLOUD_URL / CLOUD_SECRET in the code first');
+      savedScripts = [];
+      return;
+    }
+    setCloudStatus('loading…');
+    try{
+      const list = await cloudGet('list');
+      savedScripts = (Array.isArray(list) ? list : []).map(s => ({ id: s.id, name: s.name }));
+      setCloudStatus('');
+    } catch(err){
+      savedScripts = [];
+      setCloudStatus('⚠ could not reach the sheet — check your connection / URL');
+    }
   }
 
   function renderScriptList(){
@@ -1048,14 +1093,22 @@
         e.stopPropagation();
         startRename();
       });
-      nameInput.addEventListener('blur', () => {
+      nameInput.addEventListener('blur', async () => {
         nameInput.readOnly = true;
         const val = nameInput.value.trim() || 'Untitled';
         if(val !== s.name){
           s.name = val;
-          persistSavedScripts();
+          nameInput.value = s.name;
+          setCloudStatus('saving…');
+          try{
+            await cloudPost({ action: 'rename', id: s.id, name: val });
+            setCloudStatus('');
+          } catch(err){
+            setCloudStatus('⚠ rename failed to save');
+          }
+        } else {
+          nameInput.value = s.name;
         }
-        nameInput.value = s.name;
       });
       nameInput.addEventListener('keydown', (e) => {
         if(e.key === 'Enter'){ e.preventDefault(); nameInput.blur(); }
@@ -1077,17 +1130,24 @@
       delBtn.className = 'del-btn';
       delBtn.title = 'delete script';
       delBtn.textContent = '✕';
-      delBtn.addEventListener('click', (e) => {
+      delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if(!confirm('Delete "' + s.name + '"?')) return;
         savedScripts = savedScripts.filter(x => x.id !== s.id);
-        persistSavedScripts();
+        scriptsCache.delete(s.id);
         if(currentScriptId === s.id){
           currentScriptId = null;
           scriptInput.innerHTML = '';
           startBtn.disabled = true;
         }
         renderScriptList();
+        setCloudStatus('deleting…');
+        try{
+          await cloudPost({ action: 'delete', id: s.id });
+          setCloudStatus('');
+        } catch(err){
+          setCloudStatus('⚠ delete failed on the sheet');
+        }
       });
 
       item.appendChild(nameInput);
@@ -1097,47 +1157,76 @@
     });
   }
 
-  function selectScript(id){
+  async function selectScript(id){
     const s = savedScripts.find(x => x.id === id);
     if(!s) return;
     currentScriptId = id;
-    scriptInput.innerHTML = s.html;
-    startBtn.disabled = scriptInput.textContent.trim().length === 0;
     renderScriptList();
+    if(scriptsCache.has(id)){
+      scriptInput.innerHTML = scriptsCache.get(id);
+      startBtn.disabled = scriptInput.textContent.trim().length === 0;
+      return;
+    }
+    setCloudStatus('opening…');
+    try{
+      const data = await cloudGet('load', { id });
+      const html = data.html || '';
+      scriptsCache.set(id, html);
+      if(currentScriptId === id){ // guard against a fast double-click switching away
+        scriptInput.innerHTML = html;
+        startBtn.disabled = scriptInput.textContent.trim().length === 0;
+      }
+      setCloudStatus('');
+    } catch(err){
+      setCloudStatus('⚠ failed to load this script');
+    }
   }
 
-  function addNewScript(){
+  async function addNewScript(){
     const id = 'scr_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    const entry = {
-      id,
-      name: 'Script ' + (savedScripts.length + 1),
-      html: scriptInput.innerHTML
-    };
-    savedScripts.push(entry);
+    const name = 'Script ' + (savedScripts.length + 1);
+    const html = scriptInput.innerHTML;
+    savedScripts.push({ id, name });
+    scriptsCache.set(id, html);
     currentScriptId = id;
-    persistSavedScripts();
     renderScriptList();
+    setCloudStatus('saving…');
+    try{
+      await cloudPost({ action: 'save', id, name, html });
+      setCloudStatus('');
+    } catch(err){
+      setCloudStatus('⚠ save failed — check your connection');
+    }
   }
 
   addScriptBtn.addEventListener('click', addNewScript);
 
   // debounced autosave: as the user edits, keep the currently-open saved
-  // script up to date without re-saving on every keystroke
+  // script up to date on the sheet without re-saving on every keystroke
   function scheduleScriptAutosave(){
     if(currentScriptId === null) return;
+    scriptsCache.set(currentScriptId, scriptInput.innerHTML);
     clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(() => {
+    autosaveTimer = setTimeout(async () => {
       const s = savedScripts.find(x => x.id === currentScriptId);
-      if(s){
-        s.html = scriptInput.innerHTML;
-        persistSavedScripts();
+      if(!s) return;
+      const html = scriptsCache.get(s.id) || '';
+      setCloudStatus('saving…');
+      try{
+        await cloudPost({ action: 'save', id: s.id, name: s.name, html });
+        setCloudStatus('saved ✓');
+        setTimeout(() => setCloudStatus(''), 1200);
+      } catch(err){
+        setCloudStatus('⚠ save failed — check your connection');
       }
-    }, 500);
+    }, 800);
   }
   scriptInput.addEventListener('input', scheduleScriptAutosave);
 
-  loadSavedScripts();
-  renderScriptList();
+  (async () => {
+    await loadSavedScripts();
+    renderScriptList();
+  })();
 
   // ---- theme (dark / light) ----
   function setTheme(mode){
