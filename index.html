@@ -1093,14 +1093,14 @@
   // PASTE the Web App URL you get after deploying Code.gs (Deploy > New
   // deployment > Web app > Anyone can access). Looks like:
   // https://script.google.com/macros/s/AKfycb.../exec
-  const CLOUD_URL = 'PASTE_YOUR_WEB_APP_URL_HERE';
+  const CLOUD_URL = 'https://script.google.com/macros/s/AKfycbzGfaxYqg_Y1_Q1qn1dRQqZrDGHxCnZ86xGLdh3t6Z76XBLBIDSmvKPf60YMK3gXfT4/exec';
 
   // Must match the SECRET constant you set in Code.gs. This only stops
   // accidental/casual overwrites from the UI — since this file is public
   // on GitHub, anyone can read this value in the page source, so it is
   // NOT real security against a determined person. Treat this sheet as
   // a shared, semi-public scratchpad, not a private store.
-  const CLOUD_SECRET = 'PASTE_YOUR_SECRET_HERE';
+  const CLOUD_SECRET = 'tocprompter';
 
   let savedScripts = [];       // [{id, name}] — list only, html loaded lazily
   const scriptsCache = new Map(); // id -> html, filled in as scripts are opened/edited
