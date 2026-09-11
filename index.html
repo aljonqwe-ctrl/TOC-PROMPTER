@@ -773,6 +773,7 @@
     <div class="script-sidebar neu-raise">
       <div class="sidebar-title">SAVED SCRIPTS</div>
       <div id="cloudStatus" style="font-size:10px;color:var(--text-dim);min-height:14px;padding:0 2px;"></div>
+      <button type="button" class="neu-btn" id="loadScriptsBtn">⟳ load scripts</button>
       <button type="button" class="neu-btn" id="addScriptBtn">+ add script</button>
       <div class="script-list" id="scriptList"></div>
     </div>
@@ -995,6 +996,7 @@
   const ctxCustomColor = document.getElementById('ctxCustomColor');
   const scriptListEl = document.getElementById('scriptList');
   const addScriptBtn = document.getElementById('addScriptBtn');
+  const loadScriptsBtn = document.getElementById('loadScriptsBtn');
   const uploadFileBtn = document.getElementById('uploadFileBtn');
   const fileInput = document.getElementById('fileInput');
 
@@ -1006,19 +1008,20 @@
   // PASTE the Web App URL you get after deploying Code.gs (Deploy > New
   // deployment > Web app > Anyone can access). Looks like:
   // https://script.google.com/macros/s/AKfycb.../exec
-  const CLOUD_URL = 'https://script.google.com/macros/s/AKfycbzGfaxYqg_Y1_Q1qn1dRQqZrDGHxCnZ86xGLdh3t6Z76XBLBIDSmvKPf60YMK3gXfT4/exec';
+  const CLOUD_URL = 'PASTE_YOUR_WEB_APP_URL_HERE';
 
   // Must match the SECRET constant you set in Code.gs. This only stops
   // accidental/casual overwrites from the UI — since this file is public
   // on GitHub, anyone can read this value in the page source, so it is
   // NOT real security against a determined person. Treat this sheet as
   // a shared, semi-public scratchpad, not a private store.
-  const CLOUD_SECRET = 'tocprompter';
+  const CLOUD_SECRET = 'PASTE_YOUR_SECRET_HERE';
 
   let savedScripts = [];       // [{id, name}] — list only, html loaded lazily
   const scriptsCache = new Map(); // id -> html, filled in as scripts are opened/edited
   let currentScriptId = null;
   let autosaveTimer = null;
+  let hasFetchedList = false;  // list starts empty until the user clicks "load scripts"
 
   const cloudStatusEl = document.getElementById('cloudStatus');
   function setCloudStatus(text){
@@ -1052,15 +1055,18 @@
     if(CLOUD_URL.indexOf('PASTE_YOUR') === 0){
       setCloudStatus('⚠ set CLOUD_URL / CLOUD_SECRET in the code first');
       savedScripts = [];
+      hasFetchedList = true;
       return;
     }
     setCloudStatus('loading…');
     try{
       const list = await cloudGet('list');
       savedScripts = (Array.isArray(list) ? list : []).map(s => ({ id: s.id, name: s.name }));
+      hasFetchedList = true;
       setCloudStatus('');
     } catch(err){
       savedScripts = [];
+      hasFetchedList = true;
       setCloudStatus('⚠ could not reach the sheet — check your connection / URL');
     }
   }
@@ -1070,7 +1076,9 @@
     if(savedScripts.length === 0){
       const hint = document.createElement('div');
       hint.className = 'script-empty-hint';
-      hint.textContent = 'no saved scripts yet — write something above, then tap "add script"';
+      hint.textContent = hasFetchedList
+        ? 'no saved scripts on the sheet yet — write something above, then tap "add script"'
+        : 'tap "⟳ load scripts" to see scripts saved on the sheet';
       scriptListEl.appendChild(hint);
       return;
     }
@@ -1185,10 +1193,12 @@
   async function addNewScript(){
     const id = 'scr_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     const name = 'Script ' + (savedScripts.length + 1);
-    const html = scriptInput.innerHTML;
+    const html = ''; // start blank — don't carry over whatever's currently loaded
     savedScripts.push({ id, name });
     scriptsCache.set(id, html);
     currentScriptId = id;
+    scriptInput.innerHTML = html;
+    startBtn.disabled = true;
     renderScriptList();
     setCloudStatus('saving…');
     try{
@@ -1223,10 +1233,14 @@
   }
   scriptInput.addEventListener('input', scheduleScriptAutosave);
 
-  (async () => {
+  loadScriptsBtn.addEventListener('click', async () => {
+    loadScriptsBtn.disabled = true;
     await loadSavedScripts();
     renderScriptList();
-  })();
+    loadScriptsBtn.disabled = false;
+  });
+
+  renderScriptList(); // shows the "tap load scripts" hint until the button is clicked
 
   // ---- theme (dark / light) ----
   function setTheme(mode){
