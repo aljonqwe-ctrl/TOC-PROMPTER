@@ -405,6 +405,12 @@
   .format-btn:active{
     box-shadow: inset 2px 2px 5px var(--shadow-dark), inset -2px -2px 5px var(--shadow-light);
   }
+  .format-btn:disabled{
+    opacity:0.35;
+    cursor:default;
+    color:var(--text);
+  }
+  .format-btn:disabled:hover{ color:var(--text); }
   .toolbar-divider{ width:1px; height:20px; background:var(--line); margin:0 2px; }
   .format-btn.wide{
     width:auto;
@@ -773,7 +779,6 @@
     <div class="script-sidebar neu-raise">
       <div class="sidebar-title">SAVED SCRIPTS</div>
       <div id="cloudStatus" style="font-size:10px;color:var(--text-dim);min-height:14px;padding:0 2px;"></div>
-      <button type="button" class="neu-btn" id="loadScriptsBtn">⟳ load scripts</button>
       <button type="button" class="neu-btn" id="addScriptBtn">+ add script</button>
       <div class="script-list" id="scriptList"></div>
     </div>
@@ -799,6 +804,9 @@
 
     <div class="highlight-bar">
       <span class="label">format selected text:</span>
+      <button type="button" class="format-btn wide" id="undoBtn" title="undo (Ctrl+Z)">↶ undo</button>
+      <button type="button" class="format-btn wide" id="redoBtn" title="redo (Ctrl+Y)">↷ redo</button>
+      <div class="toolbar-divider"></div>
       <button type="button" class="format-btn" id="boldBtn" title="bold"><b>B</b></button>
       <button type="button" class="format-btn" id="underlineBtn" title="underline"><u>U</u></button>
       <div class="toolbar-divider"></div>
@@ -996,9 +1004,86 @@
   const ctxCustomColor = document.getElementById('ctxCustomColor');
   const scriptListEl = document.getElementById('scriptList');
   const addScriptBtn = document.getElementById('addScriptBtn');
-  const loadScriptsBtn = document.getElementById('loadScriptsBtn');
+  const undoBtn = document.getElementById('undoBtn');
+  const redoBtn = document.getElementById('redoBtn');
   const uploadFileBtn = document.getElementById('uploadFileBtn');
   const fileInput = document.getElementById('fileInput');
+
+  // ---- undo / redo history for the script editor: a plain snapshot
+  // stack of scriptInput's HTML, independent of the browser's native
+  // contenteditable undo (which gets unreliable once we do our own DOM
+  // surgery for colors/case-changes). Debounced so fast typing doesn't
+  // create one history entry per keystroke. ----
+  const HISTORY_LIMIT = 100;
+  let historyStack = [];
+  let historyIndex = -1;
+  let isRestoringHistory = false;
+  let historyDebounceTimer = null;
+
+  function updateUndoRedoButtons(){
+    undoBtn.disabled = historyIndex <= 0;
+    redoBtn.disabled = historyIndex >= historyStack.length - 1;
+  }
+
+  // called whenever a *different* script is loaded into the editor, so
+  // undo/redo only ever moves within the script currently open
+  function resetHistory(html){
+    clearTimeout(historyDebounceTimer);
+    historyStack = [html];
+    historyIndex = 0;
+    updateUndoRedoButtons();
+  }
+
+  function recordHistory(){
+    if(isRestoringHistory) return;
+    clearTimeout(historyDebounceTimer);
+    historyDebounceTimer = setTimeout(() => {
+      const html = scriptInput.innerHTML;
+      if(historyStack[historyIndex] === html) return;
+      historyStack = historyStack.slice(0, historyIndex + 1);
+      historyStack.push(html);
+      if(historyStack.length > HISTORY_LIMIT) historyStack.shift();
+      historyIndex = historyStack.length - 1;
+      updateUndoRedoButtons();
+    }, 400);
+  }
+
+  function restoreToIndex(idx){
+    isRestoringHistory = true;
+    scriptInput.innerHTML = historyStack[idx];
+    isRestoringHistory = false;
+    startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    updateUndoRedoButtons();
+    scheduleScriptAutosave(); // persist the undo/redo result back to the sheet
+  }
+
+  function undoScript(){
+    // catch the in-progress edit (if any) so undo doesn't skip it
+    clearTimeout(historyDebounceTimer);
+    const pending = scriptInput.innerHTML;
+    if(historyStack[historyIndex] !== pending){
+      historyStack = historyStack.slice(0, historyIndex + 1);
+      historyStack.push(pending);
+      if(historyStack.length > HISTORY_LIMIT) historyStack.shift();
+      historyIndex = historyStack.length - 1;
+    }
+    if(historyIndex <= 0) return;
+    historyIndex--;
+    restoreToIndex(historyIndex);
+  }
+
+  function redoScript(){
+    if(historyIndex >= historyStack.length - 1) return;
+    historyIndex++;
+    restoreToIndex(historyIndex);
+  }
+
+  undoBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  redoBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  undoBtn.addEventListener('click', undoScript);
+  redoBtn.addEventListener('click', redoScript);
+  scriptInput.addEventListener('input', recordHistory);
+  updateUndoRedoButtons();
 
   // ---- saved scripts sidebar: scripts are stored in a Google Sheet,
   // reached through a small Google Apps Script "Web App" acting as a
@@ -1021,7 +1106,6 @@
   const scriptsCache = new Map(); // id -> html, filled in as scripts are opened/edited
   let currentScriptId = null;
   let autosaveTimer = null;
-  let hasFetchedList = false;  // list starts empty until the user clicks "load scripts"
 
   const cloudStatusEl = document.getElementById('cloudStatus');
   function setCloudStatus(text){
@@ -1055,18 +1139,15 @@
     if(CLOUD_URL.indexOf('PASTE_YOUR') === 0){
       setCloudStatus('⚠ set CLOUD_URL / CLOUD_SECRET in the code first');
       savedScripts = [];
-      hasFetchedList = true;
       return;
     }
     setCloudStatus('loading…');
     try{
       const list = await cloudGet('list');
       savedScripts = (Array.isArray(list) ? list : []).map(s => ({ id: s.id, name: s.name }));
-      hasFetchedList = true;
       setCloudStatus('');
     } catch(err){
       savedScripts = [];
-      hasFetchedList = true;
       setCloudStatus('⚠ could not reach the sheet — check your connection / URL');
     }
   }
@@ -1076,9 +1157,7 @@
     if(savedScripts.length === 0){
       const hint = document.createElement('div');
       hint.className = 'script-empty-hint';
-      hint.textContent = hasFetchedList
-        ? 'no saved scripts on the sheet yet — write something above, then tap "add script"'
-        : 'tap "⟳ load scripts" to see scripts saved on the sheet';
+      hint.textContent = 'no saved scripts yet — write something above, then tap "add script"';
       scriptListEl.appendChild(hint);
       return;
     }
@@ -1173,6 +1252,7 @@
     if(scriptsCache.has(id)){
       scriptInput.innerHTML = scriptsCache.get(id);
       startBtn.disabled = scriptInput.textContent.trim().length === 0;
+      resetHistory(scriptInput.innerHTML);
       return;
     }
     setCloudStatus('opening…');
@@ -1183,6 +1263,7 @@
       if(currentScriptId === id){ // guard against a fast double-click switching away
         scriptInput.innerHTML = html;
         startBtn.disabled = scriptInput.textContent.trim().length === 0;
+        resetHistory(scriptInput.innerHTML);
       }
       setCloudStatus('');
     } catch(err){
@@ -1199,6 +1280,7 @@
     currentScriptId = id;
     scriptInput.innerHTML = html;
     startBtn.disabled = true;
+    resetHistory(html);
     renderScriptList();
     setCloudStatus('saving…');
     try{
@@ -1233,14 +1315,10 @@
   }
   scriptInput.addEventListener('input', scheduleScriptAutosave);
 
-  loadScriptsBtn.addEventListener('click', async () => {
-    loadScriptsBtn.disabled = true;
+  (async () => {
     await loadSavedScripts();
     renderScriptList();
-    loadScriptsBtn.disabled = false;
-  });
-
-  renderScriptList(); // shows the "tap load scripts" hint until the button is clicked
+  })();
 
   // ---- theme (dark / light) ----
   function setTheme(mode){
@@ -1338,6 +1416,7 @@
     sel.removeAllRanges();
     sel.addRange(range);
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   [capitalizeBtn, lowercaseBtn, uppercaseBtn, sentenceCaseBtn].forEach(btn => {
@@ -1348,11 +1427,21 @@
   uppercaseBtn.addEventListener('click', () => applyCase('upper'));
   sentenceCaseBtn.addEventListener('click', () => applyCase('sentence'));
 
-  // ---- Ctrl+B / Cmd+B shortcut for bold on the script text ----
+  // ---- Ctrl+B / Cmd+B shortcut for bold, Ctrl+Z / Ctrl+Y (or Cmd+Shift+Z)
+  // for undo/redo on the script text ----
   scriptInput.addEventListener('keydown', (e) => {
     if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b'){
       e.preventDefault();
       applyFormat('bold');
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if((e.ctrlKey || e.metaKey) && !e.shiftKey && key === 'z'){
+      e.preventDefault();
+      undoScript();
+    } else if((e.ctrlKey || e.metaKey) && (key === 'y' || (e.shiftKey && key === 'z'))){
+      e.preventDefault();
+      redoScript();
     }
   });
 
@@ -2263,6 +2352,7 @@
     }
     sel.removeAllRanges();
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   document.querySelectorAll('.swatch[data-color]').forEach(btn => {
