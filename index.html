@@ -1498,7 +1498,14 @@
   (async () => {
     await loadSavedScripts();
     renderScriptList();
+    // Also warm up the trash count on load (label only, tray stays
+    // collapsed) so "recently deleted" shows the real number right
+    // away instead of looking empty until the user opens it — that
+    // gap was mistaken for data loss more than once.
+    await loadDeletedScripts();
+    renderTrash();
   })();
+
 
   // ---- theme (dark / light) ----
   function setTheme(mode){
