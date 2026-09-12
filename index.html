@@ -2696,11 +2696,82 @@
     return { sel, range };
   }
 
+  // After a color/highlight is applied to a SELECTION, the caret is left
+  // sitting at the end of the text it just modified — which in the DOM
+  // means "the last character inside the newly-styled span". From in
+  // there, typing extends that same text node, so the new characters
+  // inherit the span's style. This is true regardless of which style
+  // property changed; asking the browser (via execCommand on a collapsed
+  // selection) to "queue" a reset style for the next character turned out
+  // to only be honored for foreColor in some browsers, not hiliteColor —
+  // so instead we fix it structurally: walk out of every styled ancestor
+  // the caret is nested inside (as long as the caret sits at the very END
+  // of each one, i.e. there's nothing after it to disturb) and place the
+  // caret in the resulting gap, directly under the *unstyled* parent.
+  // Nothing is inserted into the document to do this — a collapsed
+  // selection can legally sit "between" two sibling nodes with no text
+  // node of its own there yet. From that gap, whatever the browser types
+  // next has to create a fresh, unstyled text node, since there is no
+  // existing styled text node left for it to extend.
+  function resetTypingStyleToDefault(){
+    const sel = window.getSelection();
+    if(!sel || sel.rangeCount === 0) return;
+    sel.collapseToEnd();
+    const range = sel.getRangeAt(0);
+    let node = range.startContainer;
+    let offset = range.startOffset;
+
+    // Only relevant when the caret is at the tail end of a text node —
+    // that's the only position where "which node do new characters join"
+    // is ambiguous. Mid-text carets are unaffected by this bug.
+    if(node.nodeType !== Node.TEXT_NODE || offset !== node.length) return;
+
+    let cur = node;
+    let parent = cur.parentNode;
+    while(parent && parent !== scriptInput && parent.nodeType === Node.ELEMENT_NODE){
+      const style = parent.getAttribute && parent.getAttribute('style');
+      const isStyledSpan = parent.tagName === 'SPAN' && style &&
+        (/color/i.test(style) || /background/i.test(style));
+      if(parent.lastChild === cur && isStyledSpan){
+        cur = parent;
+        parent = parent.parentNode;
+      } else {
+        break;
+      }
+    }
+    if(cur === node) return; // caret wasn't inside a styled span at all
+
+    // Just moving the caret into the DOM gap after the styled element isn't
+    // enough on its own: Chrome/WebKit's execCommand keeps its own internal
+    // "typing style" that's separate from where the caret sits in the DOM.
+    // For a *collapsed* selection right at this boundary, the browser
+    // resolves what color new characters should get by looking at the
+    // nearest actual text — which is still the styled run — so anything
+    // typed next (even after pressing Enter into a brand new line) kept
+    // inheriting the color/highlight regardless of the gap. Inserting one
+    // real, invisible, unstyled character right there gives the browser an
+    // actual plain text node to anchor future typing to, which is what
+    // actually clears the inherited style.
+    const container = cur.parentNode;
+    const marker = document.createTextNode('\u200B');
+    if(cur.nextSibling){
+      container.insertBefore(marker, cur.nextSibling);
+    } else {
+      container.appendChild(marker);
+    }
+    const gap = document.createRange();
+    gap.setStart(marker, 1);
+    gap.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(gap);
+  }
+
   function applyColor(color){
     scriptInput.focus();
     if(!getSelectionRangeInEditor()) return;
     document.execCommand('styleWithCSS', false, true);
     document.execCommand('foreColor', false, color);
+    resetTypingStyleToDefault();
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
@@ -2714,6 +2785,7 @@
     const cmd = (document.queryCommandSupported && document.queryCommandSupported('hiliteColor'))
       ? 'hiliteColor' : 'backColor';
     document.execCommand(cmd, false, color);
+    resetTypingStyleToDefault();
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
