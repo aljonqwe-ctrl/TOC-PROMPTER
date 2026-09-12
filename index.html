@@ -2500,7 +2500,14 @@
     if(doc.querySelector('parsererror')) throw new Error('xml parse error');
     const paragraphs = Array.from(doc.getElementsByTagName('w:p'));
     if(!paragraphs.length) throw new Error('no paragraphs found');
-    return paragraphs.map(docxParagraphToHtml).join('<br><br>');
+    // Single <br> per paragraph boundary — an actual blank paragraph in
+    // the .docx (empty text) still produces one blank line on its own,
+    // via the <br> on either side of it. Joining with <br><br>
+    // unconditionally (the old behavior) forced an extra blank line
+    // between *every* paragraph, even ones that sit flush against each
+    // other in Word, which is why the imported spacing read wider than
+    // the source file.
+    return paragraphs.map(docxParagraphToHtml).join('<br>');
   }
 
   // Falls back to mammoth's plain-text extraction (no color, but still
