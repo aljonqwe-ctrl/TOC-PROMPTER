@@ -413,6 +413,15 @@
   }
   #scriptInput b, #scriptInput strong{ color:inherit; }
   #scriptInput u{ text-decoration-color:var(--phosphor); text-underline-offset:3px; }
+  /* execCommand('hiliteColor'/'backColor') only sets background-color
+     inline — it won't add padding/rounding, so give any span carrying
+     a background-color that "highlighter chip" look via CSS instead. */
+  #scriptInput span[style*="background-color"]{
+    border-radius:4px;
+    padding:0 2px;
+    box-decoration-break:clone;
+    -webkit-box-decoration-break:clone;
+  }
 
   .row{
     display:flex;
@@ -481,9 +490,8 @@
   /* format + highlight color toolbar */
   .highlight-bar{
     display:flex;
-    flex-wrap:wrap;
-    align-items:center;
-    gap:10px;
+    flex-direction:column;
+    gap:12px;
     font-size:11px;
     color:var(--text-dim);
     padding:12px 14px;
@@ -493,6 +501,16 @@
     border:1px solid var(--line);
   }
   .highlight-bar .label{ color:var(--text-dim); white-space:nowrap; }
+  .toolbar-row{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:10px;
+  }
+  .toolbar-row + .toolbar-row{
+    padding-top:12px;
+    border-top:1px solid var(--line);
+  }
 
   .format-btn{
     width:28px;
@@ -537,8 +555,8 @@
     box-shadow: 2px 2px 5px var(--shadow-dark), -2px -2px 5px var(--shadow-light);
   }
   .swatch:hover{ outline:1.5px solid var(--phosphor); }
-  .swatch[data-color="#000000"]{ border:1px solid var(--text-dim); }
-  #clearColorBtn{
+  .swatch[data-color="#000000"], .swatch[data-bgcolor="#000000"]{ border:1px solid var(--text-dim); }
+  #clearColorBtn, #clearBgBtn{
     background:var(--bg);
     border:1px solid var(--line);
     border-radius:999px;
@@ -549,8 +567,8 @@
     cursor:pointer;
     box-shadow: 3px 3px 7px var(--shadow-dark), -3px -3px 7px var(--shadow-light);
   }
-  #clearColorBtn:hover{ color:var(--danger); }
-  #clearColorBtn:active{
+  #clearColorBtn:hover, #clearBgBtn:hover{ color:var(--danger); }
+  #clearColorBtn:active, #clearBgBtn:active{
     box-shadow: inset 2px 2px 5px var(--shadow-dark), inset -2px -2px 5px var(--shadow-light);
   }
 
@@ -722,6 +740,12 @@
     padding:0 1vw;
   }
   #scriptText b, #scriptText strong{ color:inherit; -webkit-text-stroke:.6px currentColor; }
+  #scriptText span[style*="background-color"]{
+    border-radius:4px;
+    padding:0 2px;
+    box-decoration-break:clone;
+    -webkit-box-decoration-break:clone;
+  }
   #scriptText u{ text-decoration-color:var(--phosphor); text-underline-offset:.12em; text-decoration-thickness:.06em; }
 
   #controls{
@@ -889,26 +913,42 @@
     <div id="scriptInput" contenteditable="true" data-placeholder="Type or paste your script..."></div>
 
     <div class="highlight-bar">
-      <span class="label">format selected text:</span>
-      <button type="button" class="format-btn wide" id="undoBtn" title="undo (Ctrl+Z)">↶ undo</button>
-      <button type="button" class="format-btn wide" id="redoBtn" title="redo (Ctrl+Y)">↷ redo</button>
-      <div class="toolbar-divider"></div>
-      <button type="button" class="format-btn" id="boldBtn" title="bold"><b>B</b></button>
-      <button type="button" class="format-btn" id="underlineBtn" title="underline"><u>U</u></button>
-      <div class="toolbar-divider"></div>
-      <button type="button" class="format-btn wide" id="capitalizeBtn" title="Capitalize Case">Capitalize Case</button>
-      <button type="button" class="format-btn wide" id="lowercaseBtn" title="small case">small case</button>
-      <button type="button" class="format-btn wide" id="uppercaseBtn" title="UPPER CASE">UPPER CASE</button>
-      <button type="button" class="format-btn wide" id="sentenceCaseBtn" title="Sentence case">Sentence case</button>
-      <div class="toolbar-divider"></div>
-      <span class="label">highlight color:</span>
-      <button class="swatch" data-color="#ffe14d" style="background:#ffe14d" title="yellow"></button>
-      <button class="swatch" data-color="#ff5b5b" style="background:#ff5b5b" title="red"></button>
-      <button class="swatch" data-color="#4dc3ff" style="background:#4dc3ff" title="blue"></button>
-      <button class="swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="orange"></button>
-      <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="white"></button>
-      <button class="swatch" data-color="#000000" style="background:#000000" title="black"></button>
-      <button id="clearColorBtn">clear color</button>
+      <div class="toolbar-row">
+        <span class="label">format selected text:</span>
+        <button type="button" class="format-btn wide" id="undoBtn" title="undo (Ctrl+Z)">↶ undo</button>
+        <button type="button" class="format-btn wide" id="redoBtn" title="redo (Ctrl+Y)">↷ redo</button>
+        <div class="toolbar-divider"></div>
+        <button type="button" class="format-btn" id="boldBtn" title="bold"><b>B</b></button>
+        <button type="button" class="format-btn" id="underlineBtn" title="underline"><u>U</u></button>
+        <div class="toolbar-divider"></div>
+        <button type="button" class="format-btn wide" id="capitalizeBtn" title="Capitalize Case">Capitalize Case</button>
+        <button type="button" class="format-btn wide" id="lowercaseBtn" title="small case">small case</button>
+        <button type="button" class="format-btn wide" id="uppercaseBtn" title="UPPER CASE">UPPER CASE</button>
+        <button type="button" class="format-btn wide" id="sentenceCaseBtn" title="Sentence case">Sentence case</button>
+      </div>
+      <div class="toolbar-row">
+        <span class="label">highlight color:</span>
+        <button class="swatch" data-color="#ffe14d" style="background:#ffe14d" title="yellow"></button>
+        <button class="swatch" data-color="#ff5b5b" style="background:#ff5b5b" title="red"></button>
+        <button class="swatch" data-color="#4dc3ff" style="background:#4dc3ff" title="blue"></button>
+        <button class="swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="orange"></button>
+        <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="white"></button>
+        <button class="swatch" data-color="#000000" style="background:#000000" title="black"></button>
+        <button class="swatch" data-color="#4dff88" style="background:#4dff88" title="green"></button>
+        <button class="swatch" data-color="#c99bff" style="background:#c99bff" title="purple"></button>
+        <button id="clearColorBtn">clear color</button>
+        <div class="toolbar-divider"></div>
+        <span class="label">highlight background:</span>
+        <button class="swatch" data-bgcolor="#8a6d00" style="background:#8a6d00" title="yellow bg"></button>
+        <button class="swatch" data-bgcolor="#8a1f2b" style="background:#8a1f2b" title="red bg"></button>
+        <button class="swatch" data-bgcolor="#14486b" style="background:#14486b" title="blue bg"></button>
+        <button class="swatch" data-bgcolor="#8a4a0b" style="background:#8a4a0b" title="orange bg"></button>
+        <button class="swatch" data-bgcolor="#4a4a4a" style="background:#4a4a4a" title="grey bg"></button>
+        <button class="swatch" data-bgcolor="#000000" style="background:#000000" title="black bg"></button>
+        <button class="swatch" data-bgcolor="#1f6b3a" style="background:#1f6b3a" title="green bg"></button>
+        <button class="swatch" data-bgcolor="#4b2e83" style="background:#4b2e83" title="purple bg"></button>
+        <button id="clearBgBtn">clear highlight</button>
+      </div>
     </div>
 
     <div class="row">
@@ -988,7 +1028,22 @@
     <button class="swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="orange"></button>
     <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="white"></button>
     <button class="swatch" data-color="#000000" style="background:#000000" title="black"></button>
+    <button class="swatch" data-color="#4dff88" style="background:#4dff88" title="green"></button>
+    <button class="swatch" data-color="#c99bff" style="background:#c99bff" title="purple"></button>
   </div>
+  <div class="ctx-divider"></div>
+  <div class="ctx-label">highlight background</div>
+  <div class="ctx-colors">
+    <button class="swatch" data-bgcolor="#8a6d00" style="background:#8a6d00" title="yellow bg"></button>
+    <button class="swatch" data-bgcolor="#8a1f2b" style="background:#8a1f2b" title="red bg"></button>
+    <button class="swatch" data-bgcolor="#14486b" style="background:#14486b" title="blue bg"></button>
+    <button class="swatch" data-bgcolor="#8a4a0b" style="background:#8a4a0b" title="orange bg"></button>
+    <button class="swatch" data-bgcolor="#4a4a4a" style="background:#4a4a4a" title="grey bg"></button>
+    <button class="swatch" data-bgcolor="#000000" style="background:#000000" title="black bg"></button>
+    <button class="swatch" data-bgcolor="#1f6b3a" style="background:#1f6b3a" title="green bg"></button>
+    <button class="swatch" data-bgcolor="#4b2e83" style="background:#4b2e83" title="purple bg"></button>
+  </div>
+  <button type="button" class="ctx-item" id="ctxClearBg">Clear highlight</button>
   <div class="ctx-divider"></div>
   <button type="button" class="ctx-item" id="ctxClear">Clear formatting</button>
 </div>
@@ -1065,6 +1120,7 @@
   const exitBtn = document.getElementById('exitBtn');
   const exitHoverBtn = document.getElementById('exitHoverBtn');
   const clearColorBtn = document.getElementById('clearColorBtn');
+  const clearBgBtn = document.getElementById('clearBgBtn');
   const boldBtn = document.getElementById('boldBtn');
   const underlineBtn = document.getElementById('underlineBtn');
   const capitalizeBtn = document.getElementById('capitalizeBtn');
@@ -1080,6 +1136,7 @@
   const ctxUppercaseBtn = document.getElementById('ctxUppercase');
   const ctxSentenceCaseBtn = document.getElementById('ctxSentenceCase');
   const ctxClearBtn = document.getElementById('ctxClear');
+  const ctxClearBgBtn = document.getElementById('ctxClearBg');
   const scriptListEl = document.getElementById('scriptList');
   const addScriptBtn = document.getElementById('addScriptBtn');
   const trashToggle = document.getElementById('trashToggle');
@@ -1558,11 +1615,24 @@
   // ---- case conversion (Capitalize Case / small case / UPPER CASE /
   // Sentence case). If text is highlighted, only that selection is
   // converted. If nothing is highlighted, it falls back to the whole
-  // script. Either way, rather than rebuilding the range as plain text
-  // (which would strip bold/underline/highlight color), this walks the
-  // text nodes touched by the range and rewrites their characters in
-  // place — same length in, same length out — so formatting spans stay
-  // intact. ----
+  // script.
+  //
+  // Capitalize Case / small case / UPPER CASE are done with CSS
+  // (text-transform) rather than rewriting the underlying characters, so
+  // they behave like any other inline style (bold/underline/color) —
+  // "Clear formatting" (execCommand('removeFormat')) strips them along
+  // with everything else in one click, since text-transform is one of
+  // the CSS properties removeFormat is defined to remove.
+  //
+  // Sentence case can't be expressed as text-transform (CSS has no
+  // "capitalize first letter after each period" mode — 'capitalize'
+  // capitalizes every word), so it still has to rewrite the actual
+  // characters in place, same length in/out, the way all four modes
+  // used to work. That means Sentence case remains permanent/only
+  // undoable via Ctrl+Z, and — because it changes the real underlying
+  // text rather than just its on-screen display — is the only one of
+  // the four whose result also shows up correctly if the script is
+  // copied/exported or read by word-count/search logic. ----
   function applyCase(mode){
     scriptInput.focus();
     const sel = window.getSelection();
@@ -1576,6 +1646,16 @@
       range.selectNodeContents(scriptInput);
     }
 
+    if(mode === 'sentence'){
+      applyCaseRewrite(range, sel);
+    } else {
+      applyCaseTextTransform(range, sel, mode);
+    }
+  }
+
+  // Sentence case: rewrite characters in place (see comment above on why
+  // this one can't be done with CSS).
+  function applyCaseRewrite(range, sel){
     const walker = document.createTreeWalker(scriptInput, NodeFilter.SHOW_TEXT, null);
     const nodes = [];
     let n;
@@ -1584,9 +1664,7 @@
     }
     if(nodes.length === 0) return;
 
-    const isWordChar = (ch) => /[A-Za-z0-9]/.test(ch);
-    let atWordStart = true;     // for 'capitalize'
-    let atSentenceStart = true; // for 'sentence'
+    let atSentenceStart = true;
 
     nodes.forEach((node) => {
       const start = node === range.startContainer ? range.startOffset : 0;
@@ -1598,26 +1676,12 @@
 
       let out = '';
       for(const ch of selected){
-        if(mode === 'lower'){
-          out += ch.toLowerCase();
-        } else if(mode === 'upper'){
-          out += ch.toUpperCase();
-        } else if(mode === 'capitalize'){
-          if(isWordChar(ch)){
-            out += atWordStart ? ch.toUpperCase() : ch.toLowerCase();
-            atWordStart = false;
-          } else {
-            out += ch;
-            atWordStart = true;
-          }
-        } else if(mode === 'sentence'){
-          if(/[A-Za-z]/.test(ch)){
-            out += atSentenceStart ? ch.toUpperCase() : ch.toLowerCase();
-            atSentenceStart = false;
-          } else {
-            out += ch;
-            if(/[.!?\n]/.test(ch)) atSentenceStart = true;
-          }
+        if(/[A-Za-z]/.test(ch)){
+          out += atSentenceStart ? ch.toUpperCase() : ch.toLowerCase();
+          atSentenceStart = false;
+        } else {
+          out += ch;
+          if(/[.!?\n]/.test(ch)) atSentenceStart = true;
         }
       }
       node.nodeValue = before + out + after;
@@ -1628,6 +1692,64 @@
     // selected after the conversion.
     sel.removeAllRanges();
     sel.addRange(range);
+    startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // Capitalize Case / small case / UPPER CASE: wrap the selected text
+  // (per intersected text node, so any bold/underline/color spans it
+  // already sits inside are left untouched) in a new <span
+  // style="text-transform: ...">. This changes only the CSS property,
+  // never the underlying characters, which is what lets "Clear
+  // formatting" remove it and is also why copy/export/word-count will
+  // still see the original-cased text.
+  function applyCaseTextTransform(range, sel, mode){
+    const cssValue = mode === 'lower' ? 'lowercase'
+      : mode === 'upper' ? 'uppercase'
+      : 'capitalize';
+
+    const walker = document.createTreeWalker(scriptInput, NodeFilter.SHOW_TEXT, null);
+    const nodes = [];
+    let n;
+    while(n = walker.nextNode()){
+      if(range.intersectsNode(n)) nodes.push(n);
+    }
+    if(nodes.length === 0) return;
+
+    let firstNewText = null, lastNewText = null;
+
+    nodes.forEach((node) => {
+      const start = node === range.startContainer ? range.startOffset : 0;
+      const end = node === range.endContainer ? range.endOffset : node.nodeValue.length;
+      if(start >= end) return;
+      const parent = node.parentNode;
+      if(!parent) return;
+      const before = node.nodeValue.slice(0, start);
+      const selected = node.nodeValue.slice(start, end);
+      const after = node.nodeValue.slice(end);
+
+      const span = document.createElement('span');
+      span.style.textTransform = cssValue;
+      const selectedText = document.createTextNode(selected);
+      span.appendChild(selectedText);
+
+      const frag = document.createDocumentFragment();
+      if(before) frag.appendChild(document.createTextNode(before));
+      frag.appendChild(span);
+      if(after) frag.appendChild(document.createTextNode(after));
+      parent.replaceChild(frag, node);
+
+      if(!firstNewText) firstNewText = selectedText;
+      lastNewText = selectedText;
+    });
+
+    if(firstNewText && lastNewText){
+      const newRange = document.createRange();
+      newRange.setStart(firstNewText, 0);
+      newRange.setEnd(lastNewText, lastNewText.nodeValue.length);
+      sel.removeAllRanges();
+      sel.addRange(newRange);
+    }
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
@@ -1697,6 +1819,7 @@
   ctxUppercaseBtn.addEventListener('mousedown', (e) => e.preventDefault());
   ctxSentenceCaseBtn.addEventListener('mousedown', (e) => e.preventDefault());
   ctxClearBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  ctxClearBgBtn.addEventListener('mousedown', (e) => e.preventDefault());
   ctxBoldBtn.addEventListener('click', () => { applyFormat('bold'); hideCtxMenu(); });
   ctxUnderlineBtn.addEventListener('click', () => { applyFormat('underline'); hideCtxMenu(); });
   ctxCapitalizeBtn.addEventListener('click', () => { applyCase('capitalize'); hideCtxMenu(); });
@@ -1709,10 +1832,15 @@
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
     hideCtxMenu();
   });
+  ctxClearBgBtn.addEventListener('click', () => { applyBackgroundColor('transparent'); hideCtxMenu(); });
   // the ctx menu's color swatches share the .swatch[data-color] class with the
   // toolbar's, so the generic handler below already colors the text — this
   // just closes the menu afterward.
   ctxMenu.querySelectorAll('.swatch[data-color]').forEach(btn => {
+    btn.addEventListener('click', hideCtxMenu);
+  });
+  // same for the background-highlight swatches (.swatch[data-bgcolor])
+  ctxMenu.querySelectorAll('.swatch[data-bgcolor]').forEach(btn => {
     btn.addEventListener('click', hideCtxMenu);
   });
 
@@ -2539,7 +2667,20 @@
   });
   speedInitField.addEventListener('input', () => { speedInitVal.textContent = speedInitField.value; });
 
-  // ---- highlight coloring on the editable script (plain DOM, no execCommand) ----
+  // ---- highlight coloring on the editable script ----
+  // This used to be done by manually wrapping the selection in a <span>
+  // via Range.extractContents()/insertNode(). That silently failed for
+  // the single most common case: re-selecting a phrase that's already
+  // fully inside one existing span (e.g. clicking "clear highlight" on
+  // text you just highlighted). When a selection's start and end sit in
+  // the very same text node, extractContents() special-cases it and only
+  // clones the raw text — it never touches the enclosing span — so the
+  // extracted text got reinserted right back inside the still-styled
+  // span, and nothing visibly changed. Bold/underline/"Clear formatting"
+  // never had this problem because they already go through
+  // document.execCommand, which is the browser's own (correctly
+  // battle-tested) span splitting/merging logic. Routing color and
+  // background through execCommand the same way fixes it at the root.
   function getSelectionRangeInEditor(){
     const sel = window.getSelection();
     if(!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
@@ -2550,19 +2691,22 @@
 
   function applyColor(color){
     scriptInput.focus();
-    const found = getSelectionRangeInEditor();
-    if(!found) return;
-    const { sel, range } = found;
-    const span = document.createElement('span');
-    span.style.color = color;
-    try {
-      range.surroundContents(span);
-    } catch(err) {
-      const contents = range.extractContents();
-      span.appendChild(contents);
-      range.insertNode(span);
-    }
-    sel.removeAllRanges();
+    if(!getSelectionRangeInEditor()) return;
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand('foreColor', false, color);
+    startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function applyBackgroundColor(color){
+    scriptInput.focus();
+    if(!getSelectionRangeInEditor()) return;
+    document.execCommand('styleWithCSS', false, true);
+    // hiliteColor is the "highlighter" command and is what most browsers
+    // support for this; backColor is the older fallback name.
+    const cmd = (document.queryCommandSupported && document.queryCommandSupported('hiliteColor'))
+      ? 'hiliteColor' : 'backColor';
+    document.execCommand(cmd, false, color);
     startBtn.disabled = scriptInput.textContent.trim().length === 0;
     scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
@@ -2572,8 +2716,16 @@
     btn.addEventListener('click', () => applyColor(btn.getAttribute('data-color')));
   });
 
+  document.querySelectorAll('.swatch[data-bgcolor]').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep selection
+    btn.addEventListener('click', () => applyBackgroundColor(btn.getAttribute('data-bgcolor')));
+  });
+
   clearColorBtn.addEventListener('mousedown', (e) => e.preventDefault());
   clearColorBtn.addEventListener('click', () => applyColor('#34c3ff'));
+
+  clearBgBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  clearBgBtn.addEventListener('click', () => applyBackgroundColor('transparent'));
 
   function speedToPxPerSec(s){
     return 14 + s * 12;
