@@ -2457,20 +2457,51 @@
     return cleanupWordControlChars(text);
   }
 
+  // Word's fixed highlighter palette (the w:highlight element only ever
+  // stores one of these names, never a hex value) mapped to the closest
+  // screen color.
+  const DOCX_HIGHLIGHT_HEX = {
+    yellow:'#FFFF00', green:'#00FF00', cyan:'#00FFFF', magenta:'#FF00FF',
+    blue:'#0000FF', red:'#FF0000', darkblue:'#000080', darkcyan:'#008080',
+    darkgreen:'#008000', darkmagenta:'#800080', darkred:'#800000',
+    darkyellow:'#808000', darkgray:'#808080', lightgray:'#C0C0C0',
+    black:'#000000', white:'#FFFFFF'
+  };
+
   // Reads a paragraph's runs and rebuilds them as HTML, wrapping any run
-  // that has an explicit <w:color> in a <span style="color:...">, so the
-  // editor renders it exactly like a manually-applied highlight color.
+  // that has an explicit <w:color> in a <span style="color:...">, and any
+  // run with a highlight/shading in a <span style="background-color:...">
+  // (or both at once), so the editor renders it exactly like manually-
+  // applied text color and highlighter would.
   function docxParagraphToHtml(p){
     const runs = Array.from(p.getElementsByTagName('w:r'));
     let html = '';
     runs.forEach(r => {
       const rPr = r.getElementsByTagName('w:rPr')[0];
       let color = null;
+      let bgColor = null;
       if(rPr){
         const colorEl = rPr.getElementsByTagName('w:color')[0];
         if(colorEl){
           const val = colorEl.getAttribute('w:val');
           if(val && /^[0-9a-fA-F]{6}$/.test(val)) color = '#' + val;
+        }
+        // Real Word's highlighter tool writes <w:highlight w:val="...">
+        // using one of its 16 fixed color names.
+        const highlightEl = rPr.getElementsByTagName('w:highlight')[0];
+        if(highlightEl){
+          const val = (highlightEl.getAttribute('w:val') || '').toLowerCase();
+          if(val && val !== 'none') bgColor = DOCX_HIGHLIGHT_HEX[val] || null;
+        }
+        // Google Docs (and some other editors) instead export highlighted
+        // text as run shading — <w:shd w:fill="RRGGBB">. "auto" means no
+        // fill was actually set, so that's excluded.
+        if(!bgColor){
+          const shdEl = rPr.getElementsByTagName('w:shd')[0];
+          if(shdEl){
+            const fill = shdEl.getAttribute('w:fill');
+            if(fill && /^[0-9a-fA-F]{6}$/.test(fill)) bgColor = '#' + fill;
+          }
         }
       }
       let text = '';
@@ -2480,7 +2511,14 @@
         else if(node.tagName === 'w:br' || node.tagName === 'w:cr') text += '<br>';
       });
       if(!text) return;
-      html += color ? ('<span style="color:' + color + '">' + text + '</span>') : text;
+      if(color || bgColor){
+        let style = '';
+        if(color) style += 'color:' + color + ';';
+        if(bgColor) style += 'background-color:' + bgColor + ';';
+        html += '<span style="' + style + '">' + text + '</span>';
+      } else {
+        html += text;
+      }
     });
     return html;
   }
