@@ -1258,27 +1258,68 @@
     if(cloudStatusEl) cloudStatusEl.textContent = text || '';
   }
 
+  // Apps Script Web Apps are notoriously slow/flaky to "wake up" — the
+  // first request after a period of inactivity routinely takes several
+  // seconds, and just as often the response isn't valid JSON at all (an
+  // Apps Script error page, an empty body, a dropped connection). Without
+  // any retry, that single failed attempt is exactly what forced reloading
+  // the whole page over and over: a manual reload is really just "try the
+  // request again." So instead, retry a few times with a growing delay and
+  // a per-attempt timeout (so one stuck cold-start doesn't hang forever),
+  // all inside the one page load, before actually giving up.
+  async function cloudFetch(url, fetchOpts, attempts){
+    attempts = attempts || 3;
+    let lastErr;
+    for(let i = 0; i < attempts; i++){
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      try{
+        const res = await fetch(url, Object.assign({}, fetchOpts, { signal: controller.signal }));
+        clearTimeout(timeoutId);
+        const data = await res.json();
+        if(data && data.error) throw new Error(data.error);
+        return data;
+      } catch(err){
+        clearTimeout(timeoutId);
+        lastErr = err;
+        if(i < attempts - 1) await new Promise(r => setTimeout(r, 700 * (i + 1)));
+      }
+    }
+    throw lastErr;
+  }
+
   async function cloudGet(action, params){
     const url = new URL(CLOUD_URL);
     url.searchParams.set('action', action);
     Object.entries(params || {}).forEach(([k, v]) => url.searchParams.set(k, v));
-    const res = await fetch(url.toString());
-    const data = await res.json();
-    if(data && data.error) throw new Error(data.error);
-    return data;
+    return cloudFetch(url.toString());
   }
 
   async function cloudPost(payload){
     // text/plain content-type keeps this a "simple request" so the browser
     // doesn't send a CORS preflight OPTIONS, which Apps Script can't answer.
-    const res = await fetch(CLOUD_URL, {
+    return cloudFetch(CLOUD_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(Object.assign({ secret: CLOUD_SECRET }, payload))
-    });
-    const data = await res.json();
-    if(data && data.error) throw new Error(data.error);
-    return data;
+    }, 2); // writes retry less aggressively than reads, just enough to ride out a cold start
+  }
+
+  // A local, instant-loading copy of the script list, kept only so the
+  // sidebar can paint immediately on the next visit ("stale-while-
+  // revalidate") instead of sitting blank/loading while the retries above
+  // run. It's always overwritten by the real list once the network call
+  // succeeds, so it never causes stale data to stick around unnoticed.
+  const SCRIPT_LIST_CACHE_KEY = 'prompterScriptListCache_v1';
+  function readScriptListCache(){
+    try{
+      const parsed = JSON.parse(localStorage.getItem(SCRIPT_LIST_CACHE_KEY));
+      return Array.isArray(parsed) ? parsed : null;
+    } catch(err){ return null; }
+  }
+  function writeScriptListCache(list){
+    try{ localStorage.setItem(SCRIPT_LIST_CACHE_KEY, JSON.stringify(list)); }
+    catch(err){ /* private-mode / storage-full — cache is a nicety, not required */ }
   }
 
   async function loadSavedScripts(){
@@ -1287,14 +1328,26 @@
       savedScripts = [];
       return;
     }
-    setCloudStatus('loading…');
+    const cached = readScriptListCache();
+    if(cached && cached.length){
+      savedScripts = cached;
+      renderScriptList();
+      setCloudStatus('showing last known list — refreshing…');
+    } else {
+      setCloudStatus('loading…');
+    }
     try{
       const list = await cloudGet('list');
       savedScripts = (Array.isArray(list) ? list : []).map(s => ({ id: s.id, name: s.name }));
+      writeScriptListCache(savedScripts);
       setCloudStatus('');
     } catch(err){
-      savedScripts = [];
-      setCloudStatus('⚠ could not reach the sheet — check your connection / URL');
+      if(cached && cached.length){
+        setCloudStatus('⚠ could not refresh — showing last known list');
+      } else {
+        savedScripts = [];
+        setCloudStatus('⚠ could not reach the sheet — check your connection / URL');
+      }
     }
   }
 
