@@ -2175,6 +2175,14 @@
 
   function parseChpxColor(page, start, len){
     let pos = start, end = start + len, color = null, guard = 0;
+    // Word often writes BOTH sprmCIco (legacy 16-color palette index) and
+    // sprmCCv (exact COLORREF RGB) for the same run, for backward
+    // compatibility with old readers. sprmCCv is always the authoritative,
+    // full-fidelity value — sprmCIco is just a coarse fallback. Track them
+    // separately instead of letting whichever opcode happens to appear
+    // later in the stream clobber the other, so a precise custom color
+    // never gets silently downgraded to the nearest of 16 palette colors.
+    let icoColor = null, cvColor = null;
     while(pos < end - 1 && guard < 1000){
       guard++;
       const opcode = page[pos] | (page[pos+1] << 8);
@@ -2193,14 +2201,17 @@
       if(pos + opLen > end) break;
       if(opcode === 0x6870 && opLen === 4){        // sprmCCv: COLORREF font color
         const raw = (page[pos] | (page[pos+1]<<8) | (page[pos+2]<<16) | (page[pos+3]<<24)) >>> 0;
-        color = (raw === 0xFF000000) ? null : '#' + [page[pos],page[pos+1],page[pos+2]]
+        cvColor = (raw === 0xFF000000) ? null : '#' + [page[pos],page[pos+1],page[pos+2]]
           .map(x => x.toString(16).padStart(2,'0')).join('');
       } else if(opcode === 0x2A42 && opLen === 1){  // sprmCIco: 16-color palette index
         const ico = page[pos];
-        color = (ico > 0 && ico < ICO_COLORS.length) ? ICO_COLORS[ico] : null;
+        icoColor = (ico > 0 && ico < ICO_COLORS.length) ? ICO_COLORS[ico] : null;
       }
       pos += opLen;
     }
+    // Prefer the exact RGB value; only fall back to the palette index when
+    // no sprmCCv was present in this run at all.
+    color = cvColor !== null ? cvColor : icoColor;
     // Same reasoning as the .docx path above: an explicit black
     // (COLORREF 0 or ICO index 1) is almost always just "automatic" text
     // as Word wrote it, not an intentional color choice. Keeping it as an
@@ -2527,12 +2538,78 @@
     black:'#000000', white:'#FFFFFF'
   };
 
+  // Word's Theme Colors grid doesn't store a plain hex value — it stores a
+  // reference like w:themeColor="accent1" plus optional w:themeTint /
+  // w:themeShade percentages, and the actual RGB lives in the document's
+  // theme part (word/theme/theme1.xml), not in document.xml at all. Word
+  // *usually* also caches a computed w:val alongside the reference, which
+  // is why plain custom colors (picked from "More Colors") work without
+  // any of this — but a themeColor-only run has no such cache, and without
+  // resolving it the color was silently dropped, so the span fell back to
+  // the app's own accent color instead of the file's actual color. This
+  // reads the theme's 12 base colors so those references can be resolved
+  // for real instead of guessing.
+  async function extractDocxThemeColors(zip){
+    try{
+      const entry = zip.file('word/theme/theme1.xml');
+      if(!entry) return null;
+      const xmlText = await entry.async('text');
+      const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+      if(doc.querySelector('parsererror')) return null;
+      const scheme = doc.getElementsByTagName('a:clrScheme')[0];
+      if(!scheme) return null;
+      const slots = ['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+      const map = {};
+      slots.forEach(slot => {
+        const el = scheme.getElementsByTagName('a:' + slot)[0];
+        if(!el) return;
+        const srgb = el.getElementsByTagName('a:srgbClr')[0];
+        const sys = el.getElementsByTagName('a:sysClr')[0];
+        let hex = srgb ? srgb.getAttribute('val') : (sys ? (sys.getAttribute('lastClr') || sys.getAttribute('val')) : null);
+        if(hex && /^[0-9a-fA-F]{6}$/.test(hex)) map[slot] = hex.toUpperCase();
+      });
+      // w:themeColor names map onto these 12 scheme slots. text1/background1/
+      // text2/background2 are technically indirected through the document's
+      // color-map, but dk1/lt1/dk2/lt2 is what that map points to in the
+      // overwhelming majority of real files (it's what Word's own theme
+      // color picker produces), so that direct mapping is used here.
+      return {
+        dark1: map.dk1, light1: map.lt1, dark2: map.dk2, light2: map.lt2,
+        text1: map.dk1, background1: map.lt1, text2: map.dk2, background2: map.lt2,
+        accent1: map.accent1, accent2: map.accent2, accent3: map.accent3,
+        accent4: map.accent4, accent5: map.accent5, accent6: map.accent6,
+        hyperlink: map.hlink, followedHyperlink: map.folHlink
+      };
+    } catch(err){ return null; }
+  }
+
+  // Applies w:themeShade then w:themeTint on top of a base theme color, per
+  // the shade/tint algorithm Word itself uses: shade scales each channel
+  // toward black, tint scales each channel toward white. Both attributes
+  // are a hex byte (00-FF) representing that fraction out of 255 — this is
+  // exactly how the "lighter 40%" / "darker 25%" swatches in Word's Theme
+  // Colors grid are actually stored, so applying it is what makes those
+  // swatches come through as their real color instead of the flat base hue.
+  function applyThemeTintShade(hex, themeTint, themeShade){
+    let r = parseInt(hex.substr(0,2),16), g = parseInt(hex.substr(2,2),16), b = parseInt(hex.substr(4,2),16);
+    if(themeShade && /^[0-9a-fA-F]{2}$/.test(themeShade)){
+      const s = parseInt(themeShade,16) / 255;
+      r *= s; g *= s; b *= s;
+    }
+    if(themeTint && /^[0-9a-fA-F]{2}$/.test(themeTint)){
+      const t = parseInt(themeTint,16) / 255;
+      r = r*t + 255*(1-t); g = g*t + 255*(1-t); b = b*t + 255*(1-t);
+    }
+    const clamp = x => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2,'0');
+    return clamp(r) + clamp(g) + clamp(b);
+  }
+
   // Reads a paragraph's runs and rebuilds them as HTML, wrapping any run
   // that has an explicit <w:color> in a <span style="color:...">, and any
   // run with a highlight/shading in a <span style="background-color:...">
   // (or both at once), so the editor renders it exactly like manually-
   // applied text color and highlighter would.
-  function docxParagraphToHtml(p){
+  function docxParagraphToHtml(p, themeColors){
     const runs = Array.from(p.getElementsByTagName('w:r'));
     let html = '';
     runs.forEach(r => {
@@ -2552,7 +2629,21 @@
           // --text). So pure black is treated as "no color" here; anything
           // else the file actually specifies (red, blue, etc.) still comes
           // through as normal.
-          if(val && /^[0-9a-fA-F]{6}$/.test(val) && val.toLowerCase() !== '000000') color = '#' + val;
+          if(val && /^[0-9a-fA-F]{6}$/.test(val) && val.toLowerCase() !== '000000'){
+            color = '#' + val;
+          } else {
+            // No usable cached val (missing, or "auto") — fall back to
+            // resolving the theme reference directly, if there is one.
+            const themeColorName = colorEl.getAttribute('w:themeColor');
+            if(themeColorName && themeColors && themeColors[themeColorName]){
+              const resolved = applyThemeTintShade(
+                themeColors[themeColorName],
+                colorEl.getAttribute('w:themeTint'),
+                colorEl.getAttribute('w:themeShade')
+              );
+              if(resolved.toLowerCase() !== '000000') color = '#' + resolved;
+            }
+          }
         }
         // Real Word's highlighter tool writes <w:highlight w:val="...">
         // using one of its 16 fixed color names.
@@ -2604,6 +2695,7 @@
     const xmlText = await entry.async('text');
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
     if(doc.querySelector('parsererror')) throw new Error('xml parse error');
+    const themeColors = await extractDocxThemeColors(zip);
     const paragraphs = Array.from(doc.getElementsByTagName('w:p'));
     if(!paragraphs.length) throw new Error('no paragraphs found');
     // Single <br> per paragraph boundary — an actual blank paragraph in
@@ -2613,7 +2705,7 @@
     // between *every* paragraph, even ones that sit flush against each
     // other in Word, which is why the imported spacing read wider than
     // the source file.
-    return paragraphs.map(docxParagraphToHtml).join('<br>');
+    return paragraphs.map(p => docxParagraphToHtml(p, themeColors)).join('<br>');
   }
 
   // Falls back to mammoth's plain-text extraction (no color, but still
