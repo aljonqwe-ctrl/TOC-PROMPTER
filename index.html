@@ -2201,6 +2201,12 @@
       }
       pos += opLen;
     }
+    // Same reasoning as the .docx path above: an explicit black
+    // (COLORREF 0 or ICO index 1) is almost always just "automatic" text
+    // as Word wrote it, not an intentional color choice. Keeping it as an
+    // inline color would hardcode black into the script regardless of the
+    // app's theme, so it's normalized to "no color" here.
+    if(color && color.toLowerCase() === '#000000') color = null;
     return color;
   }
 
@@ -2537,7 +2543,16 @@
         const colorEl = rPr.getElementsByTagName('w:color')[0];
         if(colorEl){
           const val = colorEl.getAttribute('w:val');
-          if(val && /^[0-9a-fA-F]{6}$/.test(val)) color = '#' + val;
+          // Word almost always writes an explicit w:color val="000000" for
+          // perfectly ordinary "automatic" black text — it's not a real
+          // styling choice, just how normal text gets serialized. Treating
+          // it as an explicit color bakes a permanent black span into the
+          // script, which then ignores the app's dark/light theme (unlike
+          // typed text, which has no inline color and just inherits
+          // --text). So pure black is treated as "no color" here; anything
+          // else the file actually specifies (red, blue, etc.) still comes
+          // through as normal.
+          if(val && /^[0-9a-fA-F]{6}$/.test(val) && val.toLowerCase() !== '000000') color = '#' + val;
         }
         // Real Word's highlighter tool writes <w:highlight w:val="...">
         // using one of its 16 fixed color names.
