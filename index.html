@@ -1313,12 +1313,13 @@
   // request again." So instead, retry a few times with a growing delay and
   // a per-attempt timeout (so one stuck cold-start doesn't hang forever),
   // all inside the one page load, before actually giving up.
-  async function cloudFetch(url, fetchOpts, attempts){
+  async function cloudFetch(url, fetchOpts, attempts, timeoutMs){
     attempts = attempts || 3;
+    timeoutMs = timeoutMs || 15000;
     let lastErr;
     for(let i = 0; i < attempts; i++){
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       try{
         const res = await fetch(url, Object.assign({}, fetchOpts, { signal: controller.signal }));
         clearTimeout(timeoutId);
@@ -1344,11 +1345,21 @@
   async function cloudPost(payload){
     // text/plain content-type keeps this a "simple request" so the browser
     // doesn't send a CORS preflight OPTIONS, which Apps Script can't answer.
+    //
+    // Writes get a longer per-attempt timeout (25s vs the 15s default for
+    // reads) and fewer attempts. This matters because aborting client-side
+    // on timeout does NOT stop the Apps Script execution on Google's side —
+    // it keeps running and can still write to the sheet after the browser
+    // has already given up and reported "failed". A short timeout on a
+    // slow cold start was producing exactly that: a real write landing in
+    // the sheet moments after the UI had already shown an error for it.
+    // Giving writes more room to finish before the browser gives up cuts
+    // down on that false-failure case.
     return cloudFetch(CLOUD_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(Object.assign({ secret: CLOUD_SECRET }, payload))
-    }, 2); // writes retry less aggressively than reads, just enough to ride out a cold start
+    }, 2, 25000);
   }
 
   // A local, instant-loading copy of the script list, kept only so the
