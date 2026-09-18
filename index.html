@@ -1596,6 +1596,32 @@
     }
   }
 
+  // Warms the local cache for every saved script in the background,
+  // right after the list loads. Without this, clicking a script for
+  // the first time on a given device (e.g. the "script computer" that
+  // wasn't used to type it) always pays the full network round trip —
+  // this pre-fetches all of them ahead of time so that by the time you
+  // actually click one, it's very likely already sitting in the local
+  // cache and paints instantly, with only a quick background revalidate
+  // (see selectScript) rather than a full cold wait. Runs one at a
+  // time (not in parallel) to avoid hammering the Apps Script backend
+  // with a burst of simultaneous requests; silently skips anything
+  // that's already cached or that fails, since this is a best-effort
+  // head start, not something the UI depends on.
+  async function prefetchScriptContents(){
+    for(const s of savedScripts){
+      if(scriptsCache.has(s.id)) continue;
+      try{
+        const data = await cloudGet('load', { id: s.id });
+        const html = data.html || '';
+        scriptsCache.set(s.id, html);
+        writeScriptContentCache(s.id, html);
+      } catch(err){
+        // best-effort — a skipped prefetch just falls back to fetching on click, same as before
+      }
+    }
+  }
+
   trashToggle.addEventListener('click', async () => {
     trashOpen = !trashOpen;
     trashToggle.classList.toggle('open', trashOpen);
@@ -1713,6 +1739,7 @@
     // gap was mistaken for data loss more than once.
     await loadDeletedScripts();
     renderTrash();
+    prefetchScriptContents(); // fire-and-forget — doesn't block anything above
   })();
 
 
