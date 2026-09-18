@@ -203,6 +203,18 @@
     border-radius:6px;
   }
   .script-item .del-btn:hover{ color:var(--danger); }
+  .script-item .cache-dot{
+    flex-shrink:0;
+    width:6px;
+    height:6px;
+    border-radius:50%;
+    background:var(--text-dim);
+    opacity:0.35;
+  }
+  .script-item .cache-dot.ready{
+    background:var(--phosphor);
+    opacity:1;
+  }
   .script-empty-hint{
     font-size:11px;
     color:var(--text-dim);
@@ -1420,6 +1432,17 @@
     savedScripts.forEach(s => {
       const item = document.createElement('div');
       item.className = 'script-item neu-btn' + (s.id === currentScriptId ? ' active' : '');
+      item.dataset.id = s.id;
+
+      // A small dot showing whether this script's content is already
+      // sitting in the local cache (from the background prefetch, or
+      // from having opened it before) — solid = opens instantly on
+      // click, dim = not fetched yet, clicking it will need a moment.
+      const cacheDot = document.createElement('span');
+      cacheDot.className = 'cache-dot' + (scriptsCache.has(s.id) ? ' ready' : '');
+      cacheDot.title = scriptsCache.has(s.id)
+        ? 'ready — opens instantly'
+        : 'not loaded yet — will fetch when opened';
 
       const nameInput = document.createElement('input');
       nameInput.className = 'script-name';
@@ -1508,10 +1531,26 @@
         }
       });
 
+      item.appendChild(cacheDot);
       item.appendChild(nameInput);
       item.appendChild(renameBtn);
       item.appendChild(delBtn);
       scriptListEl.appendChild(item);
+    });
+  }
+
+  // Marks one script's dot as "ready" in place, without re-rendering the
+  // whole list (which would interrupt anyone mid-rename or mid-click).
+  // Called whenever a script's content lands in scriptsCache — from the
+  // background prefetch, or from opening/refreshing it directly.
+  function markScriptCached(id){
+    scriptListEl.querySelectorAll('.script-item').forEach(item => {
+      if(item.dataset.id !== id) return;
+      const dot = item.querySelector('.cache-dot');
+      if(dot){
+        dot.classList.add('ready');
+        dot.title = 'ready — opens instantly';
+      }
     });
   }
 
@@ -1627,6 +1666,7 @@
         const html = data.html || '';
         scriptsCache.set(s.id, html);
         writeScriptContentCache(s.id, html);
+        markScriptCached(s.id);
       } catch(err){
         // best-effort — a skipped prefetch just falls back to fetching on click, same as before
       }
@@ -1670,6 +1710,7 @@
       const html = data.html || '';
       scriptsCache.set(id, html);
       writeScriptContentCache(id, html);
+      markScriptCached(id);
       if(currentScriptId === id){ // guard against a fast double-click switching away
         // Only overwrite the editor if it still matches what we painted
         // from cache — if the user already started typing while this
