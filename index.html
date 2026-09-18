@@ -1241,7 +1241,33 @@
   const CLOUD_SECRET = 'tocprompter';
 
   let savedScripts = [];       // [{id, name}] — list only, html loaded lazily
-  const scriptsCache = new Map(); // id -> html, filled in as scripts are opened/edited
+  // Per-script content cache in localStorage. Before this, scriptsCache
+  // below was memory-only, so it reset on every page reload — meaning
+  // reopening a script you'd *already viewed this session* still had to
+  // hit the network again after any refresh. Hydrating from localStorage
+  // makes that instant, the same "stale-while-revalidate" idea already
+  // used for the script list further down.
+  const SCRIPT_CONTENT_CACHE_KEY = 'prompterScriptContentCache_v1';
+  const SCRIPT_CONTENT_CACHE_MAX = 30; // cap how many scripts' html we keep locally
+  function readScriptContentCache(){
+    try{
+      const parsed = JSON.parse(localStorage.getItem(SCRIPT_CONTENT_CACHE_KEY));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch(err){ return {}; }
+  }
+  function writeScriptContentCache(id, html){
+    try{
+      const cache = readScriptContentCache();
+      cache[id] = html;
+      const ids = Object.keys(cache);
+      if(ids.length > SCRIPT_CONTENT_CACHE_MAX){
+        // object key order = insertion order, so this drops the oldest entries first
+        ids.slice(0, ids.length - SCRIPT_CONTENT_CACHE_MAX).forEach(k => delete cache[k]);
+      }
+      localStorage.setItem(SCRIPT_CONTENT_CACHE_KEY, JSON.stringify(cache));
+    } catch(err){ /* private-mode / storage-full — cache is a nicety, not required */ }
+  }
+  const scriptsCache = new Map(Object.entries(readScriptContentCache())); // id -> html, hydrated from localStorage, then kept in sync as scripts are opened/edited
   let currentScriptId = null;
   let autosaveTimer = null;
 
@@ -1256,6 +1282,26 @@
   const cloudStatusEl = document.getElementById('cloudStatus');
   function setCloudStatus(text){
     if(cloudStatusEl) cloudStatusEl.textContent = text || '';
+  }
+
+  // Shows "<label>… 1.2s" ticking up while a cloud request is in flight,
+  // so it's visible at a glance whether a given load is hitting the fast
+  // warm-deployment case or the slow cold-start case, instead of just
+  // seeing "loading…" sit there with no sense of how long it's been.
+  // Call the returned stop() once the request settles, before setting
+  // whatever final status message (success/error) that call site uses.
+  function tickStatus(label){
+    const start = Date.now();
+    setCloudStatus(label + '…');
+    const timer = setInterval(() => {
+      setCloudStatus(label + '… ' + ((Date.now() - start) / 1000).toFixed(1) + 's');
+    }, 200);
+    let stopped = false;
+    return function stop(){
+      if(stopped) return;
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   // Apps Script Web Apps are notoriously slow/flaky to "wake up" — the
@@ -1332,16 +1378,16 @@
     if(cached && cached.length){
       savedScripts = cached;
       renderScriptList();
-      setCloudStatus('showing last known list — refreshing…');
-    } else {
-      setCloudStatus('loading…');
     }
+    const stopTick = tickStatus(cached && cached.length ? 'showing last known list — refreshing' : 'loading');
     try{
       const list = await cloudGet('list');
+      stopTick();
       savedScripts = (Array.isArray(list) ? list : []).map(s => ({ id: s.id, name: s.name }));
       writeScriptListCache(savedScripts);
       setCloudStatus('');
     } catch(err){
+      stopTick();
       if(cached && cached.length){
         setCloudStatus('⚠ could not refresh — showing last known list');
       } else {
@@ -1385,11 +1431,13 @@
         if(val !== s.name){
           s.name = val;
           nameInput.value = s.name;
-          setCloudStatus('saving…');
+          const stopTick = tickStatus('saving');
           try{
             await cloudPost({ action: 'rename', id: s.id, name: val });
+            stopTick();
             setCloudStatus('');
           } catch(err){
+            stopTick();
             setCloudStatus('⚠ rename failed to save');
           }
         } else {
@@ -1553,8 +1601,9 @@
     trashToggle.classList.toggle('open', trashOpen);
     trashSectionEl.style.display = trashOpen ? 'flex' : 'none';
     if(trashOpen && !trashLoaded){
-      setCloudStatus('loading trash…');
+      const stopTick = tickStatus('loading trash');
       await loadDeletedScripts();
+      stopTick();
       setCloudStatus('');
     }
     renderTrash();
@@ -1565,25 +1614,44 @@
     if(!s) return;
     currentScriptId = id;
     renderScriptList();
-    if(scriptsCache.has(id)){
-      scriptInput.innerHTML = scriptsCache.get(id);
+    // Paint the local cache instantly if we have one, purely so the box
+    // isn't sitting blank/loading — but never trust it as the final
+    // answer. A cache hit only tells you what THIS device last saw for
+    // this script; another device (e.g. the one you typed it on) may
+    // have saved something newer since. So this always re-fetches from
+    // the sheet below regardless of whether we had a cache hit here.
+    const cachedHtml = scriptsCache.has(id) ? scriptsCache.get(id) : null;
+    if(cachedHtml !== null){
+      scriptInput.innerHTML = cachedHtml;
       startBtn.disabled = scriptInput.textContent.trim().length === 0;
       resetHistory(scriptInput.innerHTML);
-      return;
     }
-    setCloudStatus('opening…');
+    const stopTick = tickStatus(cachedHtml !== null ? 'refreshing' : 'opening');
     try{
       const data = await cloudGet('load', { id });
+      stopTick();
       const html = data.html || '';
       scriptsCache.set(id, html);
+      writeScriptContentCache(id, html);
       if(currentScriptId === id){ // guard against a fast double-click switching away
-        scriptInput.innerHTML = html;
-        startBtn.disabled = scriptInput.textContent.trim().length === 0;
-        resetHistory(scriptInput.innerHTML);
+        // Only overwrite the editor if it still matches what we painted
+        // from cache — if the user already started typing while this
+        // fetch was in flight, don't clobber their in-progress edit with
+        // a response that was requested before they typed it.
+        if(cachedHtml === null || scriptInput.innerHTML === cachedHtml){
+          scriptInput.innerHTML = html;
+          startBtn.disabled = scriptInput.textContent.trim().length === 0;
+          resetHistory(scriptInput.innerHTML);
+        }
       }
       setCloudStatus('');
     } catch(err){
-      setCloudStatus('⚠ failed to load this script');
+      stopTick();
+      if(cachedHtml === null){
+        setCloudStatus('⚠ failed to load this script');
+      } else {
+        setCloudStatus('⚠ could not refresh — showing last known version, may be outdated');
+      }
     }
   }
 
@@ -1598,11 +1666,13 @@
     startBtn.disabled = true;
     resetHistory(html);
     renderScriptList();
-    setCloudStatus('saving…');
+    const stopTick = tickStatus('saving');
     try{
       await cloudPost({ action: 'save', id, name, html });
+      stopTick();
       setCloudStatus('');
     } catch(err){
+      stopTick();
       setCloudStatus('⚠ save failed — check your connection');
     }
   }
@@ -1619,12 +1689,15 @@
       const s = savedScripts.find(x => x.id === currentScriptId);
       if(!s) return;
       const html = scriptsCache.get(s.id) || '';
-      setCloudStatus('saving…');
+      const stopTick = tickStatus('saving');
       try{
         await cloudPost({ action: 'save', id: s.id, name: s.name, html });
+        stopTick();
+        writeScriptContentCache(s.id, html);
         setCloudStatus('saved ✓');
         setTimeout(() => setCloudStatus(''), 1200);
       } catch(err){
+        stopTick();
         setCloudStatus('⚠ save failed — check your connection');
       }
     }, 800);
