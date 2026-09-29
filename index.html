@@ -435,6 +435,42 @@
     -webkit-box-decoration-break:clone;
   }
 
+  /* ---------- script markers ----------
+     A marker is an empty, non-editable <span class="script-marker">. Its
+     "⚑ 1" label is drawn by CSS (counter), so it is never part of the
+     script's text — case conversion, word counts etc. can't touch it, and
+     markers renumber themselves automatically in reading order. */
+  #scriptInput{ counter-reset:mk; }
+  #scriptInput .script-marker{
+    counter-increment:mk;
+    display:inline-block;
+    vertical-align:middle;
+    margin:0 4px;
+    padding:1px 9px;
+    border-radius:999px;
+    font-family:var(--mono);
+    font-weight:700;
+    font-size:12px;
+    line-height:1.5;
+    letter-spacing:.04em;
+    color:var(--phosphor);
+    background:var(--bg);
+    border:1px solid var(--phosphor-dim);
+    box-shadow:2px 2px 5px var(--shadow-dark), -2px -2px 5px var(--shadow-light);
+    -webkit-user-select:all;
+    user-select:all;
+    cursor:default;
+  }
+  #scriptInput .script-marker::before{ content:"\2691  " counter(mk); }
+  /* in the prompter itself the marker is an invisible zero-width anchor */
+  #scriptText .script-marker{
+    display:inline-block;
+    width:0;
+    height:1em;
+    overflow:hidden;
+    vertical-align:baseline;
+  }
+
   .row{
     display:flex;
     flex-wrap:wrap;
@@ -821,6 +857,64 @@
   }
   #controls select option{ background:var(--panel); }
 
+  #markerGrp{ position:relative; }
+  #markerMenu{
+    display:none;
+    position:absolute;
+    left:0;
+    bottom:calc(100% + 18px);
+    z-index:60;
+    min-width:260px;
+    max-width:min(420px, 86vw);
+    max-height:min(280px, 42vh);
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    scrollbar-width:thin;
+    scrollbar-color:var(--phosphor-dim) transparent;
+    flex-direction:column;
+    gap:4px;
+    padding:8px;
+    border-radius:var(--radius-md);
+  }
+  #markerMenu::-webkit-scrollbar{ width:6px; }
+  #markerMenu::-webkit-scrollbar-thumb{ background:var(--phosphor-dim); border-radius:6px; }
+  #markerMenu .marker-item{ flex-shrink:0; }
+  #markerMenu.open{ display:flex; }
+  #markerMenu .marker-item{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    width:100%;
+    text-align:left;
+    background:transparent;
+    border:none;
+    box-shadow:none;
+    border-radius:8px;
+    color:var(--text);
+    font-family:var(--mono);
+    font-size:12.5px;
+    padding:9px 10px;
+    cursor:pointer;
+  }
+  #markerMenu .marker-item:hover{
+    box-shadow: inset 3px 3px 7px var(--shadow-dark), inset -3px -3px 7px var(--shadow-light);
+    color:var(--phosphor);
+  }
+  #markerMenu .marker-item .n{
+    flex-shrink:0;
+    min-width:26px;
+    color:var(--phosphor);
+    font-weight:700;
+  }
+  #markerMenu .marker-item .t{
+    flex:1;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--text-dim);
+  }
+
   #exitBtn{
     margin-left:auto;
     color:var(--danger) !important;
@@ -937,6 +1031,9 @@
         <button type="button" class="format-btn wide" id="lowercaseBtn" title="small case">small case</button>
         <button type="button" class="format-btn wide" id="uppercaseBtn" title="UPPER CASE">UPPER CASE</button>
         <button type="button" class="format-btn wide" id="sentenceCaseBtn" title="Sentence case">Sentence case</button>
+        <div class="toolbar-divider"></div>
+        <button type="button" class="format-btn wide" id="addMarkerBtn" title="drop a marker at the cursor — you can jump back to it while prompting">&#9873; add marker</button>
+        <button type="button" class="format-btn wide" id="clearMarkersBtn" title="remove all markers from this script">clear markers</button>
       </div>
       <div class="toolbar-row">
         <span class="label">highlight color:</span>
@@ -1094,6 +1191,10 @@
       <input type="range" id="spacingSlider" min="1" max="3" step="0.1" value="1">
       <span class="val" id="spacingVal">1</span>
     </div>
+    <div class="grp" id="markerGrp" style="display:none;">
+      <button id="markerBtn" title="jump to a marker (or press 1-9)">&#9873; markers</button>
+      <div id="markerMenu" class="neu-raise"></div>
+    </div>
     <button id="exitBtn">exit</button>
   </div>
 </div>
@@ -1133,6 +1234,11 @@
   const exitHoverBtn = document.getElementById('exitHoverBtn');
   const clearColorBtn = document.getElementById('clearColorBtn');
   const clearBgBtn = document.getElementById('clearBgBtn');
+  const addMarkerBtn = document.getElementById('addMarkerBtn');
+  const clearMarkersBtn = document.getElementById('clearMarkersBtn');
+  const markerGrp = document.getElementById('markerGrp');
+  const markerBtn = document.getElementById('markerBtn');
+  const markerMenu = document.getElementById('markerMenu');
   const boldBtn = document.getElementById('boldBtn');
   const underlineBtn = document.getElementById('underlineBtn');
   const capitalizeBtn = document.getElementById('capitalizeBtn');
@@ -3156,6 +3262,145 @@
   clearBgBtn.addEventListener('mousedown', (e) => e.preventDefault());
   clearBgBtn.addEventListener('click', () => applyBackgroundColor('transparent'));
 
+  // ---- markers: drop them while writing, jump back to them while prompting ----
+  function insertMarker(){
+    // read the caret BEFORE focus() — focusing can reset it
+    const sel = window.getSelection();
+    let range = null;
+    if(sel && sel.rangeCount > 0){
+      const r = sel.getRangeAt(0);
+      if(scriptInput.contains(r.commonAncestorContainer)) range = r.cloneRange();
+    }
+    scriptInput.focus();
+    if(!range){
+      // caret wasn't in the script box: put the marker at the very end
+      range = document.createRange();
+      range.selectNodeContents(scriptInput);
+    }
+    range.collapse(false);
+
+    const m = document.createElement('span');
+    m.className = 'script-marker';
+    m.setAttribute('contenteditable', 'false');
+    // invisible character after the chip so the caret always has somewhere
+    // to sit next to it (some browsers can't place a caret after a
+    // non-editable element at the end of a line)
+    const after = document.createTextNode('\u200B');
+    range.insertNode(after);
+    range.insertNode(m);
+
+    const caret = document.createRange();
+    caret.setStart(after, 1);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+
+    startBtn.disabled = scriptInput.textContent.trim().length === 0;
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function clearMarkers(){
+    const marks = scriptInput.querySelectorAll('.script-marker');
+    if(!marks.length) return;
+    marks.forEach(m => m.remove());
+    scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // keep the selection/caret in the script box when clicking the buttons
+  addMarkerBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  clearMarkersBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  addMarkerBtn.addEventListener('click', insertMarker);
+  clearMarkersBtn.addEventListener('click', clearMarkers);
+
+  // one Backspace right after a marker removes the marker (and its
+  // invisible spacer character) instead of appearing to do nothing
+  scriptInput.addEventListener('keydown', (e) => {
+    if(e.key !== 'Backspace') return;
+    const sel = window.getSelection();
+    if(!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
+    const r = sel.getRangeAt(0);
+    const node = r.startContainer;
+    if(node.nodeType === Node.TEXT_NODE && r.startOffset === 1 && node.data.charAt(0) === '\u200B'){
+      const prev = node.previousSibling;
+      if(prev && prev.classList && prev.classList.contains('script-marker')){
+        e.preventDefault();
+        prev.remove();
+        node.deleteData(0, 1);
+        const nr = document.createRange();
+        nr.setStart(node, 0);
+        nr.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(nr);
+        scriptInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }
+  });
+
+  // ---- prompter side ----
+  function markerSnippet(m){
+    const r = document.createRange();
+    r.setStartAfter(m);
+    r.setEnd(scriptText, scriptText.childNodes.length);
+    const t = r.toString().replace(/[\u200B\s]+/g, ' ').trim();
+    if(!t) return '(end of script)';
+    return t.length > 52 ? t.slice(0, 52) + '\u2026' : t;
+  }
+
+  function closeMarkerMenu(){ markerMenu.classList.remove('open'); }
+
+  function jumpTo(y){
+    const maxScroll = Math.max(0, scrollTrack.scrollHeight - viewport.clientHeight) + 200;
+    posY = Math.min(maxScroll, Math.max(0, y));
+    scrollTrack.style.transform = 'translateY(-' + Math.round(posY) + 'px)';
+  }
+
+  function jumpToMarker(i){
+    const m = scriptText.querySelectorAll('.script-marker')[i];
+    if(!m) return;
+    // both rects are shifted by the same scroll transform, so the
+    // difference is the marker's true distance from the top of the script
+    const top = m.getBoundingClientRect().top - scrollTrack.getBoundingClientRect().top;
+    // land the marker's line on the reading line (same spot as the guide)
+    jumpTo(top - viewport.clientHeight * 0.38);
+    closeMarkerMenu();
+  }
+
+  function addMarkerMenuItem(label, text, onClick){
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'marker-item';
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = label;
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = text;
+    b.appendChild(n);
+    b.appendChild(t);
+    b.addEventListener('click', onClick);
+    markerMenu.appendChild(b);
+  }
+
+  function buildMarkerMenu(){
+    const marks = scriptText.querySelectorAll('.script-marker');
+    markerMenu.innerHTML = '';
+    closeMarkerMenu();
+    markerGrp.style.display = marks.length ? '' : 'none';
+    if(!marks.length) return;
+    addMarkerMenuItem('\u2191', 'top of script', () => { jumpTo(0); closeMarkerMenu(); });
+    marks.forEach((m, i) => {
+      addMarkerMenuItem('\u2691 ' + (i + 1), markerSnippet(m), () => jumpToMarker(i));
+    });
+  }
+
+  markerBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    markerMenu.classList.toggle('open');
+  });
+  document.addEventListener('click', (e) => {
+    if(markerMenu.classList.contains('open') && !markerGrp.contains(e.target)) closeMarkerMenu();
+  });
+
   function speedToPxPerSec(s){
     return 14 + s * 12;
   }
@@ -3172,6 +3417,7 @@
     const margin = parseFloat(marginInitField.value) || 3;
 
     scriptText.innerHTML = scriptInput.innerHTML;
+    buildMarkerMenu();
     scriptText.style.fontSize = fontSize + 'px';
     scriptText.style.textAlign = align === 'left' ? 'left' : 'center';
     scriptText.style.lineHeight = lineSpacing;
@@ -3315,6 +3561,7 @@
   exitHoverBtn.addEventListener('click', exitPrompter);
 
   function exitPrompter(){
+    closeMarkerMenu();
     pause();
     arrowDir = 0;
     stage.classList.remove('active');
@@ -3334,7 +3581,12 @@
       e.preventDefault();
       if(!e.repeat) startArrowScroll(1);
     } else if(e.code === 'Escape'){
-      exitPrompter();
+      // Esc closes the marker list first; a second Esc exits
+      if(markerMenu.classList.contains('open')) closeMarkerMenu();
+      else exitPrompter();
+    } else if(/^(Digit|Numpad)[1-9]$/.test(e.code) && !e.ctrlKey && !e.metaKey && !e.altKey){
+      // 1-9 = jump straight to marker 1-9
+      jumpToMarker(parseInt(e.code.slice(-1), 10) - 1);
     }
   });
 
