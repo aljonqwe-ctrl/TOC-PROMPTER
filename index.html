@@ -146,6 +146,20 @@
     color:var(--phosphor);
     background:var(--bg);
   }
+  #manualSaveBtn{
+    width:100%;
+    padding:8px;
+    font-size:12px;
+    letter-spacing:.5px;
+    color:var(--text-dim);
+    background:var(--bg);
+  }
+  #manualSaveBtn:not(:disabled):hover{ color:var(--phosphor); }
+  #manualSaveBtn:disabled{
+    opacity:.4;
+    cursor:default;
+    box-shadow:none;
+  }
   .script-list{
     display:flex;
     flex-direction:column;
@@ -994,6 +1008,7 @@
       <div class="sidebar-title">SAVED SCRIPTS</div>
       <div id="cloudStatus" style="font-size:10px;color:var(--text-dim);min-height:14px;padding:0 2px;"></div>
       <button type="button" class="neu-btn" id="addScriptBtn">+ add script</button>
+      <button type="button" class="neu-btn" id="manualSaveBtn" title="force-save the open script now, in case autosave failed" disabled>💾 save now</button>
       <div class="script-list" id="scriptList"></div>
       <button type="button" class="trash-toggle" id="trashToggle"><span class="caret">▸</span><span id="trashToggleLabel">recently deleted</span></button>
       <div class="trash-section" id="trashSection" style="display:none;"></div>
@@ -1257,6 +1272,7 @@
   const ctxClearBgBtn = document.getElementById('ctxClearBg');
   const scriptListEl = document.getElementById('scriptList');
   const addScriptBtn = document.getElementById('addScriptBtn');
+  const manualSaveBtn = document.getElementById('manualSaveBtn');
   const trashToggle = document.getElementById('trashToggle');
   const trashToggleLabel = document.getElementById('trashToggleLabel');
   const trashSectionEl = document.getElementById('trashSection');
@@ -1527,6 +1543,7 @@
   }
 
   function renderScriptList(){
+    manualSaveBtn.disabled = (currentScriptId === null);
     scriptListEl.innerHTML = '';
     if(savedScripts.length === 0){
       const hint = document.createElement('div');
@@ -1887,6 +1904,36 @@
     }, 800);
   }
   scriptInput.addEventListener('input', scheduleScriptAutosave);
+
+  // Manual "save now" — a fallback for when autosave silently failed
+  // (bad connection, a cold Apps Script deployment timing out, etc.)
+  // and the user wants to force a save right now rather than wait for
+  // the next edit to retrigger the debounced autosave. Cancels any
+  // pending autosave first so this doesn't fire twice in a row for
+  // the same content.
+  async function saveCurrentScriptNow(){
+    if(currentScriptId === null) return;
+    const s = savedScripts.find(x => x.id === currentScriptId);
+    if(!s) return;
+    clearTimeout(autosaveTimer);
+    const html = scriptInput.innerHTML;
+    scriptsCache.set(s.id, html);
+    manualSaveBtn.disabled = true;
+    const stopTick = tickStatus('saving');
+    try{
+      await cloudPost({ action: 'save', id: s.id, name: s.name, html });
+      stopTick();
+      writeScriptContentCache(s.id, html);
+      setCloudStatus('saved ✓');
+      setTimeout(() => setCloudStatus(''), 1200);
+    } catch(err){
+      stopTick();
+      setCloudStatus('⚠ save failed — check your connection, then try again');
+    } finally {
+      manualSaveBtn.disabled = (currentScriptId === null);
+    }
+  }
+  manualSaveBtn.addEventListener('click', saveCurrentScriptNow);
 
   (async () => {
     await loadSavedScripts();
